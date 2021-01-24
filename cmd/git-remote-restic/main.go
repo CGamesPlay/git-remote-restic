@@ -4,81 +4,224 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
-	"path"
+	"strconv"
+	"strings"
 
+	"github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/pkg/errors"
 	"github.com/restic/restic/lib/repository"
 )
 
-var refspec string
-var gitmarks string
+var remoteName plumbing.ReferenceName
 var repo *repository.Repository
 var reader *bufio.Reader
+var printProgress = false
+var verbosity = 1
+var globalCtx = context.Background()
+var followTags = false
 
 func cmdCapabilities() error {
-	fmt.Printf("import\n")
-	fmt.Printf("export\n")
-	fmt.Printf("refspec %s\n", refspec)
-	fmt.Printf("*import-marks %s\n", gitmarks)
-	fmt.Printf("*export-marks %s\n", gitmarks)
-	fmt.Printf("signed-tags\n")
+	fmt.Printf("fetch\n")
+	fmt.Printf("push\n")
+	fmt.Printf("option\n")
 	fmt.Printf("\n")
 	return nil
 }
 
-func cmdList() error {
-	fmt.Printf("\n")
-	return nil
-}
-
-// Apparently sometimes the git marks file can become corrupted on a crash.
-// This will restore it to the original value in case of a failure.
-func preserveMarks() (func(err error), error) {
-	originalGitmarks, err := ioutil.ReadFile(gitmarks)
+func cmdList(forPush bool) error {
+	refs, err := remoteGitRepo.References()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	return func(err error) {
-		if err != nil {
-			ioutil.WriteFile(gitmarks, originalGitmarks, 0666)
+	var symRefs []string
+	hashesSeen := false
+	for {
+		ref, err := refs.Next()
+		if errors.Cause(err) == io.EOF {
+			break
 		}
-	}, nil
+		if err != nil {
+			return err
+		}
+
+		value := ""
+		switch ref.Type() {
+		case plumbing.HashReference:
+			value = ref.Hash().String()
+			hashesSeen = true
+		case plumbing.SymbolicReference:
+			value = "@" + ref.Target().String()
+		default:
+			value = "?"
+		}
+		refStr := value + " " + ref.Name().String() + "\n"
+		if ref.Type() == plumbing.SymbolicReference {
+			// Don't list any symbolic references until we're sure
+			// there's at least one object available.  Otherwise
+			// cloning an empty repo will result in an error because
+			// the HEAD symbolic ref points to a ref that doesn't
+			// exist.
+			symRefs = append(symRefs, refStr)
+			continue
+		}
+		fmt.Print(refStr)
+	}
+
+	if hashesSeen && !forPush {
+		for _, refStr := range symRefs {
+			fmt.Print(refStr)
+		}
+	}
+	fmt.Print("\n")
+	return nil
+}
+
+func cmdOption(command string) error {
+	switch {
+	case command == "progress true":
+		printProgress = true
+		goto ok
+	case strings.HasPrefix(command, "verbosity "):
+		newV, err := strconv.Atoi(command[10:len(command)])
+		if err != nil {
+			fmt.Printf("error %v", err)
+			return nil
+		}
+		verbosity = newV
+		goto ok
+	case strings.HasPrefix(command, "followtags "):
+		panic("tagmode!")
+		val := command[11:len(command)]
+		switch val {
+		case "true":
+			followTags = true
+			goto ok
+		case "false":
+			followTags = false
+			goto ok
+		default:
+			fmt.Printf("error invalid followtags %#v", val)
+		}
+	case false == true:
+		// This tells go-vet that the panic below is "reachable".
+	default:
+		Warnf("unsupported option %#v\n", command)
+		goto unsupported
+	}
+	panic("option parsing failed")
+unsupported:
+	fmt.Printf("unsupported\n")
+	return nil
+ok:
+	fmt.Printf("ok\n")
+	return nil
+}
+
+func cmdFetch(param string) error {
+	fetchSpecs := make([][]string, 1)
+	fetchSpecs[0] = strings.SplitN(param, " ", 2)
+	if len(fetchSpecs[0]) != 2 {
+		return fmt.Errorf("invalid fetch declaration %#v", param)
+	}
+loop:
+	for {
+		command, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+
+		switch {
+		case strings.HasPrefix(command, "fetch "):
+			param = command[6 : len(command)-1]
+			fetchSpecs = append(fetchSpecs, nil)
+			fetchSpecs[len(fetchSpecs)-1] = strings.SplitN(param, " ", 2)
+			if len(fetchSpecs[len(fetchSpecs)-1]) != 2 {
+				return fmt.Errorf("invalid fetch declaration %#v", param)
+			}
+		case command == "\n":
+			break loop
+		default:
+			return fmt.Errorf("unknown push command %q", command)
+		}
+	}
+
+	if err := FetchBatch(fetchSpecs); err != nil {
+		return err
+	}
+	fmt.Printf("\n")
+	return nil
+}
+
+func cmdPush(param string) error {
+	refspecs := make([]config.RefSpec, 1)
+	refspecs[0] = config.RefSpec(param)
+	if err := refspecs[0].Validate(); err != nil {
+		return err
+	}
+loop:
+	for {
+		command, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+
+		switch {
+		case strings.HasPrefix(command, "push "):
+			param = command[5 : len(command)-1]
+			refspecs = append(refspecs, "")
+			refspecs[len(refspecs)-1] = config.RefSpec(param)
+			if err = refspecs[len(refspecs)-1].Validate(); err != nil {
+				return err
+			}
+		case command == "\n":
+			break loop
+		default:
+			return fmt.Errorf("unknown push command %q", command)
+		}
+	}
+
+	results, err := PushBatch(refspecs)
+	if err != nil {
+		return err
+	}
+	for dst, err := range results {
+		if err == nil {
+			fmt.Printf("ok %s\n", dst)
+		} else {
+			fmt.Printf("error %s %#v\n", dst, err)
+		}
+	}
+	fmt.Printf("\n")
+	return nil
 }
 
 // Main entry point.
 func Main() (err error) {
-	ctx := context.Background()
+	reader = bufio.NewReader(os.Stdin)
 
 	if len(os.Args) < 3 {
-		return fmt.Errorf("Usage: %v remote-name url", os.Args[0])
+		return fmt.Errorf("Usage: %s remote-name url", os.Args[0])
 	}
 
-	remoteName := os.Args[1]
+	remoteName = plumbing.ReferenceName(os.Args[1])
 	url := os.Args[2]
 
-	if repo, err = openBackend(url); err != nil {
-		return err
-	}
-	refspec = fmt.Sprintf("refs/heads/*:refs/restic/%s/*", remoteName)
-
-	localdir := path.Join(os.Getenv("GIT_DIR"), "restic", remoteName)
-	if err := os.MkdirAll(localdir, 0755); err != nil {
+	if repo, err = openRepository(url); err != nil {
 		return err
 	}
 
-	gitmarks = path.Join(localdir, "gitmarks")
-	if err := Touch(gitmarks); err != nil {
-		return err
+	gitDir := os.Getenv("GIT_DIR")
+	if gitDir == "" {
+		gitDir = ".git"
+		if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+			return fmt.Errorf("GIT_DIR not set and no .git directory exists")
+		}
 	}
-	restoreMarks, err := preserveMarks()
-	if err != nil {
-		return err
-	}
-	defer restoreMarks(err)
 
-	reader = bufio.NewReader(os.Stdin)
 	for {
 		// Note that command will include the trailing newline.
 		command, err := reader.ReadString('\n')
@@ -88,17 +231,25 @@ func Main() (err error) {
 
 		switch {
 		case command == "capabilities\n":
-			err = cmdCapabilities()
-			if err != nil {
+			if err = cmdCapabilities(); err != nil {
 				return err
 			}
-		case command == "list\n":
-			err = cmdList()
-			if err != nil {
+		case command == "list\n" || command == "list for-push\n":
+			if err = cmdList(command == "list for-push\n"); err != nil {
 				return err
 			}
-		case command == "export\n":
-			return FastImport(ctx)
+		case strings.HasPrefix(command, "option "):
+			if err = cmdOption(command[7 : len(command)-1]); err != nil {
+				return err
+			}
+		case strings.HasPrefix(command, "fetch "):
+			if err = cmdFetch(command[6 : len(command)-1]); err != nil {
+				return err
+			}
+		case strings.HasPrefix(command, "push "):
+			if err = cmdPush(command[5 : len(command)-1]); err != nil {
+				return err
+			}
 		case command == "\n":
 			return nil
 		default:

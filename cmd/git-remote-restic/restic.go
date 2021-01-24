@@ -14,7 +14,7 @@ import (
 	"github.com/restic/restic/lib/restic"
 )
 
-func openBackend(path string) (*repository.Repository, error) {
+func openRepository(path string) (*repository.Repository, error) {
 	var err error
 	ctx := context.Background()
 	config, err := local.ParseConfig(path)

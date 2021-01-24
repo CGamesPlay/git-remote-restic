@@ -30,8 +30,8 @@ type CommitMetadata struct {
 
 // FastImport implements the git fast-import protocol to store the repository
 // in restic.
-func FastImport(ctx context.Context) error {
-	lock, err := lockRepository(ctx, repo, false)
+func FastImport() error {
+	lock, err := lockRepository(globalCtx, repo, false)
 	if err != nil {
 		return err
 	}
@@ -50,11 +50,11 @@ func FastImport(ctx context.Context) error {
 			}
 			return fmt.Errorf("Unsupported feature %q", command)
 		case command == "blob\n":
-			if err := importBlob(ctx); err != nil {
+			if err := importBlob(globalCtx); err != nil {
 				return err
 			}
 		case strings.HasPrefix(command, "reset "):
-			if err := importCommit(ctx, command[6:len(command)-1]); err != nil {
+			if err := importCommit(globalCtx, command[6:len(command)-1]); err != nil {
 				return err
 			}
 		default:
