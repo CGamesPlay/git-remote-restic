@@ -1,16 +1,20 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
+	"github.com/CGamesPlay/git-remote-restic/pkg/filesystem"
+	"github.com/go-git/go-billy/v5/helper/polyfill"
 	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
-	"github.com/go-git/go-git/v5/storage/filesystem"
+	gitfs "github.com/go-git/go-git/v5/storage/filesystem"
 	"github.com/pkg/errors"
+	"github.com/restic/restic/lib/restic"
 )
 
 var remoteGitRepo *git.Repository
@@ -20,7 +24,7 @@ const anonymous = "anonymous"
 
 func init() {
 	fs := osfs.New("../git.bare")
-	s := filesystem.NewStorageWithOptions(fs, cache.NewObjectLRUDefault(), filesystem.Options{KeepDescriptors: true})
+	s := gitfs.NewStorageWithOptions(fs, cache.NewObjectLRUDefault(), gitfs.Options{KeepDescriptors: true})
 	var err error
 	remoteGitRepo, err = git.Open(s, fs)
 	if err != nil {
@@ -31,6 +35,28 @@ func init() {
 	if localGitPath == "" {
 		localGitPath = git.GitDirName
 	}
+}
+
+func initRemoteGitRepo() error {
+	if remoteGitRepo != nil {
+		return nil
+	}
+	id, err := restic.FindLatestSnapshot(context.Background(), resticRepo, nil, nil, nil)
+	if err != nil {
+		return err
+	}
+	snapshot, err := restic.LoadSnapshot(context.Background(), resticRepo, id)
+	if err != nil {
+		return err
+	}
+	fs, err := filesystem.NewResticTreeFs(context.Background(), resticRepo, snapshot.Tree)
+	if err != nil {
+		return err
+	}
+	pf := polyfill.New(fs)
+	s := gitfs.NewStorageWithOptions(pf, cache.NewObjectLRUDefault(), gitfs.Options{KeepDescriptors: true})
+	remoteGitRepo, err = git.Open(s, pf)
+	return err
 }
 
 // FetchBatch is reponsible for fetching a batch of remote refs and storing

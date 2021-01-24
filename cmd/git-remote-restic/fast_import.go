@@ -31,7 +31,7 @@ type CommitMetadata struct {
 // FastImport implements the git fast-import protocol to store the repository
 // in restic.
 func FastImport() error {
-	lock, err := lockRepository(globalCtx, repo, false)
+	lock, err := lockRepository(globalCtx, resticRepo, false)
 	if err != nil {
 		return err
 	}

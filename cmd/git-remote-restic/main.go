@@ -12,11 +12,11 @@ import (
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/pkg/errors"
-	"github.com/restic/restic/lib/repository"
+	"github.com/restic/restic/lib/restic"
 )
 
 var remoteName plumbing.ReferenceName
-var repo *repository.Repository
+var resticRepo restic.Repository
 var reader *bufio.Reader
 var printProgress = false
 var verbosity = 1
@@ -210,7 +210,7 @@ func Main() (err error) {
 	remoteName = plumbing.ReferenceName(os.Args[1])
 	url := os.Args[2]
 
-	if repo, err = openRepository(url); err != nil {
+	if resticRepo, err = openRepository(url); err != nil {
 		return err
 	}
 

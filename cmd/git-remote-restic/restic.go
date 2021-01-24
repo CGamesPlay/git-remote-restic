@@ -46,7 +46,7 @@ var globalLocks struct {
 	sync.Mutex
 }
 
-func lockRepository(ctx context.Context, repo *repository.Repository, exclusive bool) (*restic.Lock, error) {
+func lockRepository(ctx context.Context, repo restic.Repository, exclusive bool) (*restic.Lock, error) {
 	lockFn := restic.NewLock
 	if exclusive {
 		lockFn = restic.NewExclusiveLock
