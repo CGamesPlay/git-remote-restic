@@ -213,6 +213,9 @@ func Main() (err error) {
 	if resticRepo, err = openRepository(url); err != nil {
 		return err
 	}
+	if err := initRemoteGitRepo(); err != nil {
+		return err
+	}
 
 	gitDir := os.Getenv("GIT_DIR")
 	if gitDir == "" {

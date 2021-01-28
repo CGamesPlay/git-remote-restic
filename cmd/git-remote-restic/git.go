@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/CGamesPlay/git-remote-restic/pkg/filesystem"
+	"github.com/CGamesPlay/git-remote-restic/pkg/resticfs"
 	"github.com/go-git/go-billy/v5/helper/polyfill"
-	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -17,20 +16,12 @@ import (
 	"github.com/restic/restic/lib/restic"
 )
 
-var remoteGitRepo *git.Repository
 var localGitPath string
+var remoteGitRepo *git.Repository
 
 const anonymous = "anonymous"
 
 func init() {
-	fs := osfs.New("../git.bare")
-	s := gitfs.NewStorageWithOptions(fs, cache.NewObjectLRUDefault(), gitfs.Options{KeepDescriptors: true})
-	var err error
-	remoteGitRepo, err = git.Open(s, fs)
-	if err != nil {
-		panic(err)
-	}
-
 	localGitPath = os.Getenv("GIT_DIR")
 	if localGitPath == "" {
 		localGitPath = git.GitDirName
@@ -45,11 +36,7 @@ func initRemoteGitRepo() error {
 	if err != nil {
 		return err
 	}
-	snapshot, err := restic.LoadSnapshot(context.Background(), resticRepo, id)
-	if err != nil {
-		return err
-	}
-	fs, err := filesystem.NewResticTreeFs(context.Background(), resticRepo, snapshot.Tree)
+	fs, err := resticfs.New(context.Background(), resticRepo, &id)
 	if err != nil {
 		return err
 	}

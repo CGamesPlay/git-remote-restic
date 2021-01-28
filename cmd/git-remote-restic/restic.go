@@ -36,6 +36,10 @@ func openRepository(path string) (*repository.Repository, error) {
 		return nil, err
 	}
 
+	if err = repo.LoadIndex(ctx); err != nil {
+		return nil, err
+	}
+
 	return repo, err
 }
 
