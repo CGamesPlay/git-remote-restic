@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 	"strconv"
 	"strings"
@@ -194,6 +195,25 @@ loop:
 	return nil
 }
 
+func findPassword(url string) (string, error) {
+	password := os.Getenv("RESTIC_PASSWORD")
+	if password != "" {
+		return password, nil
+	}
+
+	pwFile := os.Getenv("RESTIC_PASSWORD_FILE")
+	if pwFile != "" {
+		data, err := ioutil.ReadFile(pwFile)
+		password = strings.TrimSpace(string(data))
+		if err != nil {
+			return "", err
+		}
+		return password, nil
+	}
+
+	return getGitCredential(url)
+}
+
 // Main entry point.
 func Main() (err error) {
 	reader = bufio.NewReader(os.Stdin)
@@ -205,7 +225,7 @@ func Main() (err error) {
 	remoteName = plumbing.ReferenceName(os.Args[1])
 	url := os.Args[2]
 
-	password, err := getGitCredential(url)
+	password, err := findPassword(url)
 	if err != nil {
 		return err
 	}

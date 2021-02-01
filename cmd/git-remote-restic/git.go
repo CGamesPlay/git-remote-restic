@@ -188,6 +188,10 @@ func getGitCredential(urlStr string) (string, error) {
 }
 
 func confirmGitCredential(url string, success bool) error {
+	if returnedCredentials == "" {
+		// Password didn't come from git credential
+		return nil
+	}
 	var action = "reject"
 	if success {
 		action = "approve"

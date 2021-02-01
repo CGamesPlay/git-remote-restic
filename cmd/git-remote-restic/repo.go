@@ -11,10 +11,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/cache"
 	gitfs "github.com/go-git/go-git/v5/storage/filesystem"
 	"github.com/pkg/errors"
-	"github.com/restic/restic/lib/backend"
-	"github.com/restic/restic/lib/backend/local"
-	"github.com/restic/restic/lib/backend/location"
-	"github.com/restic/restic/lib/limiter"
 	"github.com/restic/restic/lib/repository"
 	"github.com/restic/restic/lib/restic"
 )
@@ -37,22 +33,10 @@ type Repository struct {
 
 // NewRepository creates a new Repository.
 func NewRepository(ctx context.Context, path string, password string) (*Repository, error) {
-	loc, err := location.Parse(path)
+	be, err := openResticBackend(ctx, path, nil)
 	if err != nil {
 		return nil, err
 	}
-	if loc.Scheme != "local" {
-		return nil, errors.New("only local is supported")
-	}
-	var be restic.Backend
-	if be, err = local.Open(ctx, loc.Config.(local.Config)); err != nil {
-		return nil, err
-	}
-	lim := limiter.NewStaticLimiter(0, 0)
-	be = limiter.LimitBackend(be, lim)
-	be = backend.NewRetryBackend(be, 10, func(msg string, err error, d time.Duration) {
-		Warnf("%v returned error, retrying after %v: %v\n", msg, d, err)
-	})
 	resticRepo := repository.New(be)
 	if err = resticRepo.SearchKey(ctx, password, 0, ""); err != nil {
 		return nil, err

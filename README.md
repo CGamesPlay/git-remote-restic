@@ -6,8 +6,6 @@ This is a prototype version of a git remote that stores data in a restic reposit
 
 `cmd/git-remote-restic`
 
-- Need to build out the proper backend sources.
-- Add support for `RESTIC_PASSWORD` and `RESTIC_PASSWORD_FILE`.
 - Document how to use `git credential` to store the repo password.
 
 ## Plan for pushing to restic
