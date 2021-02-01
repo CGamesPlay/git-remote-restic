@@ -32,17 +32,26 @@ func initRemoteGitRepo() error {
 	if remoteGitRepo != nil {
 		return nil
 	}
+	var parentSnapshot *restic.ID
 	id, err := restic.FindLatestSnapshot(context.Background(), resticRepo, nil, nil, nil)
+	if err != nil && err != restic.ErrNoSnapshotFound {
+		return err
+	}
+	if err == nil {
+		parentSnapshot = &id
+	}
+	fs, err := resticfs.New(context.Background(), resticRepo, parentSnapshot)
 	if err != nil {
 		return err
 	}
-	fs, err := resticfs.New(context.Background(), resticRepo, &id)
-	if err != nil {
-		return err
-	}
+	fs.StartNewSnapshot()
 	pf := polyfill.New(fs)
 	s := gitfs.NewStorageWithOptions(pf, cache.NewObjectLRUDefault(), gitfs.Options{KeepDescriptors: true})
-	remoteGitRepo, err = git.Open(s, pf)
+	if parentSnapshot == nil {
+		remoteGitRepo, err = git.Init(s, pf)
+	} else {
+		remoteGitRepo, err = git.Open(s, pf)
+	}
 	return err
 }
 

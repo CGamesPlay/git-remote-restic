@@ -3,15 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"time"
 
-	"github.com/CGamesPlay/git-remote-restic/pkg/filesystem"
-	"github.com/go-git/go-billy/v5/helper/polyfill"
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/cache"
-	"github.com/go-git/go-git/v5/plumbing/object"
-	gitfs "github.com/go-git/go-git/v5/storage/filesystem"
+	"github.com/CGamesPlay/git-remote-restic/pkg/resticfs"
 	"github.com/restic/restic/lib/backend"
 	"github.com/restic/restic/lib/backend/local"
 	"github.com/restic/restic/lib/limiter"
@@ -19,9 +15,7 @@ import (
 	"github.com/restic/restic/lib/restic"
 )
 
-var resticRepo *repository.Repository
-
-func openRepository(path string, password string) (*repository.Repository, error) {
+func openRepository(path string, password string) (*resticfs.Filesystem, error) {
 	var err error
 	ctx := context.Background()
 	config, err := local.ParseConfig(path)
@@ -46,56 +40,47 @@ func openRepository(path string, password string) (*repository.Repository, error
 		return nil, err
 	}
 
-	return repo, err
+	id, err := restic.FindLatestSnapshot(ctx, repo, nil, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	fs, err := resticfs.New(ctx, repo, &id)
+	if err != nil {
+		return nil, err
+	}
+
+	return fs, err
 }
 
-func testRestic(ctx context.Context) error {
-	id, err := restic.FindLatestSnapshot(ctx, resticRepo, nil, nil, nil)
+func testRestic(fs *resticfs.Filesystem) error {
+	items, err := fs.ReadDir("")
 	if err != nil {
 		return err
 	}
-	snapshot, err := restic.LoadSnapshot(ctx, resticRepo, id)
+	for _, fi := range items {
+		fmt.Printf("%v\n", fi)
+	}
+	file, err := fs.Open("README.md")
 	if err != nil {
 		return err
 	}
-	fs, err := filesystem.NewResticTreeFs(ctx, resticRepo, snapshot.Tree)
+	data, err := ioutil.ReadAll(file)
 	if err != nil {
 		return err
 	}
-	pf := polyfill.New(fs)
-	s := gitfs.NewStorageWithOptions(pf, cache.NewObjectLRUDefault(), gitfs.Options{KeepDescriptors: true})
-	repo, err := git.Open(s, pf)
-	if err != nil {
+	if err := file.Close(); err != nil {
 		return err
 	}
-	ref, err := repo.Head()
-	if err != nil {
-		return err
-	}
-	commit, err := repo.CommitObject(ref.Hash())
-	if err != nil {
-		return err
-	}
-	fmt.Println(commit)
-	tree, err := commit.Tree()
-	if err != nil {
-		return err
-	}
-	tree.Files().ForEach(func(f *object.File) error {
-		fmt.Printf("100644 blob %s    %s\n", f.Hash, f.Name)
-		return nil
-	})
-
+	fmt.Print(string(data))
 	return nil
 }
 
 func main() {
-	var err error
-	resticRepo, err = openRepository("local:fixtures/restic", "password")
+	fs, err := openRepository("local:fixtures/basic", "password")
 	if err != nil {
 		panic(err)
 	}
-	err = testRestic(context.Background())
+	err = testRestic(fs)
 	if err != nil {
 		panic(err)
 	}

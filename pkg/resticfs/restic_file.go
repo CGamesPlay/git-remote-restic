@@ -12,7 +12,7 @@ import (
 
 type resticFile struct {
 	fs   *Filesystem
-	node *restic.Node
+	node *resticNode
 	// cumsize holds the cumulatoive size of blobs[:i]
 	cumsize  []uint64
 	isClosed bool
@@ -21,7 +21,7 @@ type resticFile struct {
 
 var _ billy.File = (*resticFile)(nil)
 
-func newFile(fs *Filesystem, node *restic.Node) (*resticFile, error) {
+func newResticFile(fs *Filesystem, node *resticNode) (*resticFile, error) {
 	file := &resticFile{
 		fs:      fs,
 		node:    node,

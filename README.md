@@ -2,7 +2,25 @@
 
 This is a prototype version of a git remote that stores data in a restic repository. The existing code is built on the git-remote-keybase and does some hacks to ease the integration with go-git. This is because go-git can act as a client for the git wire protocol, but [nothing exists to allow it to act as a server](https://github.com/go-git/go-git/issues/152).
 
-REVISED PLAN:
+## Current status
+
+`cmd/git-remote-restic`
+
+- Presently it's a mess of global variables and distributed state. Need to clean up the repository opening process; ideally a single API that returns a loaded `git.Repository` from a restic URL.
+
+`pkg/resticfs`
+
+- **Writable support is janky.** Outstanding issues:
+- All file metadata needs to be preserved properly
+- Snapshot metadata fields need to be incorporated properly
+
+### Making a writable filesystem
+
+There are some problems to be addressed when creating a writable filesystem:
+
+- Files opened for reading may have the backing data converted to a temporary file.
+
+## Plan for pushing to restic
 
 After looking through [git-remote-keybase](https://github.com/keybase/client/blob/cd76ccb97183c2be78b869fab9aed4b6f5b11086/go/kbfs/kbfsgit/runner.go), it looks like I'm overthinking things. What this program does is basically provide a VFS on kbfs, and then just push using go-git to a bare repository there. I could do a similar thing with restic, the basic process would look like this:
 

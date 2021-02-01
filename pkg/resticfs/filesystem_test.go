@@ -23,6 +23,18 @@ const (
 	basicRepoPassword = "password"
 )
 
+// openTestRepo creates a test repository in memory and returns a Filesystem
+// pointing to it.
+func openTestRepo(t *testing.T) (*Filesystem, func()) {
+	repo, cleanup := repository.TestRepository(t)
+
+	fs, err := New(testCtx, repo, nil)
+	if err != nil {
+		panic(err)
+	}
+	return fs, cleanup
+}
+
 // openBasicRepo loads the basic restic repo and returns it and the latest
 // snapshot ID.
 func openBasicRepo() *Filesystem {
@@ -73,16 +85,20 @@ func RequireFileInfoEqual(t *testing.T, expected, actual []os.FileInfo) {
 	require.Equal(t, eStr, aStr)
 }
 
+func MakeNodeInfo(node restic.Node) NodeInfo {
+	return NodeInfo{&resticNode{Node: node}}
+}
+
 func TestReadDir(t *testing.T) {
 	fs := openBasicRepo()
 
 	expectedRoot := []os.FileInfo{
-		NodeInfo{&restic.Node{Name: "README.md", Size: 116, Mode: os.FileMode(0644)}},
-		NodeInfo{&restic.Node{Name: "images", Size: 0, Mode: os.ModeDir | os.FileMode(0755)}},
+		MakeNodeInfo(restic.Node{Name: "README.md", Size: 116, Mode: os.FileMode(0644)}),
+		MakeNodeInfo(restic.Node{Name: "images", Size: 0, Mode: os.ModeDir | os.FileMode(0755)}),
 	}
 
 	expectedImages := []os.FileInfo{
-		NodeInfo{&restic.Node{Name: "IMG_8646.jpeg", Size: 1635171, Mode: os.FileMode(0644)}},
+		MakeNodeInfo(restic.Node{Name: "IMG_8646.jpeg", Size: 1635171, Mode: os.FileMode(0644)}),
 	}
 
 	items, err := fs.ReadDir("")
@@ -96,7 +112,7 @@ func TestReadDir(t *testing.T) {
 func TestStat(t *testing.T) {
 	fs := openBasicRepo()
 
-	expected := NodeInfo{&restic.Node{Name: "IMG_8646.jpeg", Size: 1635171, Mode: os.FileMode(0644)}}
+	expected := MakeNodeInfo(restic.Node{Name: "IMG_8646.jpeg", Size: 1635171, Mode: os.FileMode(0644)})
 	fi, err := fs.Stat("/images/IMG_8646.jpeg")
 	require.NoError(t, err)
 	RequireFileInfoEqual(t, []os.FileInfo{expected}, []os.FileInfo{fi})
@@ -110,4 +126,42 @@ func TestReadFile(t *testing.T) {
 	actual, err := ioutil.ReadAll(file)
 	require.NoError(t, err)
 	require.Equal(t, expected, string(actual))
+}
+
+func TestWriteFile(t *testing.T) {
+	fs, cleanup := openTestRepo(t)
+	defer cleanup()
+	fs.StartNewSnapshot()
+
+	file, err := fs.Create("file-1")
+	require.NoError(t, err)
+	_, err = file.Write([]byte("content of file-1\n"))
+	require.NoError(t, err)
+	err = file.Close()
+	require.NoError(t, err)
+
+	id, err := fs.CommitSnapshot()
+	require.NoError(t, err)
+	require.NotEmpty(t, id)
+}
+
+func TestMkdirAll(t *testing.T) {
+	fs, cleanup := openTestRepo(t)
+	defer cleanup()
+	fs.StartNewSnapshot()
+
+	err := fs.MkdirAll("foo/bar", 0777)
+	require.NoError(t, err)
+	file, err := fs.Create("foo/bar/file-1")
+	require.NoError(t, err)
+	_, err = file.Write([]byte("content of file-1\n"))
+	require.NoError(t, err)
+	err = file.Close()
+	require.NoError(t, err)
+	err = fs.MkdirAll("foo/bar/file-1", 0777)
+	require.Equal(t, err, ErrNotDirectory)
+
+	id, err := fs.CommitSnapshot()
+	require.NoError(t, err)
+	require.NotEmpty(t, id)
 }

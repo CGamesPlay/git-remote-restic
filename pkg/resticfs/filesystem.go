@@ -2,13 +2,16 @@ package resticfs
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-git/go-billy/v5"
+	"github.com/go-git/go-billy/v5/osfs"
+	billyutil "github.com/go-git/go-billy/v5/util"
+	"github.com/restic/chunker"
 	"github.com/restic/restic/lib/restic"
 )
 
@@ -18,59 +21,77 @@ const blobCacheSize = 64 << 20
 
 // Filesystem satisfies billy.Filesystem and allows reading and writing restic
 // snapshots. By default, Filesystems are read-only, writing can be enabled
-// using the EnableCopyOnWrite method.
+// using the StartNewSnapshot method.
 type Filesystem struct {
+	mu sync.Mutex
 	// We keep a context to pass to restic because the billy.Filesystem
 	// interface doesn't provide one for operations.
-	ctx      context.Context
-	repo     restic.Repository
-	writable bool
-	// loadedTrees is a map of restic tree IDs to the loaded representation of
-	// those trees. This list is initially empty and populated on demand when
-	// accessing the Filesystem.
-	loadedTrees map[restic.ID]*restic.Tree
-	rootTreeID  *restic.ID
-	blobCache   *blobCache
+	ctx       context.Context
+	repo      restic.Repository
+	writable  bool
+	root      *resticTree
+	blobCache *blobCache
+	// Temporary is the backing store for temporary files created by the
+	// Filesystem. The default value for Temporary is an osfs.FileSystem, but a
+	// custom value can be provided here.
+	Temporary billy.Filesystem
+	chunker   *chunker.Chunker
+	buf       []byte
 }
 
 var _ billy.Basic = (*Filesystem)(nil)
 var _ billy.Dir = (*Filesystem)(nil)
+var _ billy.TempFile = (*Filesystem)(nil)
 
 // New returns a new, read-only Filesystem based on the provided
 // restic.Repository and snapshot ID. If the snapshot ID is nil, the Filesystem
-// will be initially empty
+// will be initially empty. The caller is responsible for properly locking and
+// unlocking the restic repository.
 func New(ctx context.Context, repo restic.Repository, parentSnapshotID *restic.ID) (*Filesystem, error) {
-	// XXX - need to lock the repository
-	var rootTreeID *restic.ID
+	fs := &Filesystem{
+		ctx:       ctx,
+		repo:      repo,
+		blobCache: newBlobCache(blobCacheSize),
+		Temporary: osfs.New(""),
+	}
 	if parentSnapshotID != nil {
 		snapshot, err := restic.LoadSnapshot(ctx, repo, *parentSnapshotID)
 		if err != nil {
 			return nil, err
 		}
-		rootTreeID = snapshot.Tree
-	}
-	fs := &Filesystem{
-		ctx:         ctx,
-		repo:        repo,
-		loadedTrees: make(map[restic.ID]*restic.Tree, 1),
-		rootTreeID:  rootTreeID,
-		blobCache:   newBlobCache(blobCacheSize),
+		fs.root, err = openTree(fs, nil, *snapshot.Tree)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		fs.root = newTree(fs, nil)
 	}
 	return fs, nil
 }
 
-// EnableCopyOnWrite enables writing to this Filesystem. Writing to files is
-// accomplished entirely in memory, and only when the file is closed is the
-// data actually written to the restic repository. Further, the data will be
-// orphaned until the FinalizeSnapshot method is called.
-func (fs *Filesystem) EnableCopyOnWrite() {
+// StartNewSnapshot enables writing to this Filesystem.  Writing to files is
+// accomplished using Temporary, and only when the file
+// is closed is the data actually written to the restic repository. Further,
+// the data will be orphaned until the CommitSnapshot method is called.
+func (fs *Filesystem) StartNewSnapshot() {
 	fs.writable = true
 }
 
-// FinalizeSnapshot isn't implemented. We probably want to actually update the
+// CommitSnapshot isn't implemented. We probably want to actually update the
 // existing snapshot here.
-func (fs *Filesystem) FinalizeSnapshot() {
-	panic("FinalizeSnapshot not implemented")
+func (fs *Filesystem) CommitSnapshot() (restic.ID, error) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	tree, err := fs.root.Commit()
+	if err != nil {
+		return restic.ID{}, err
+	}
+	snapshot, err := restic.NewSnapshot([]string{"git"}, []string{}, "hostname", time.Now())
+	if err != nil {
+		return restic.ID{}, err
+	}
+	snapshot.Tree = &tree
+	return fs.repo.SaveJSONUnpacked(fs.ctx, restic.SnapshotFile, snapshot)
 }
 
 // Create creates the named file with mode 0666 (before umask), truncating
@@ -92,23 +113,20 @@ func (fs *Filesystem) Open(filename string) (billy.File, error) {
 // perm, (0666 etc.) if applicable. If successful, methods on the returned
 // File can be used for I/O.
 func (fs *Filesystem) OpenFile(fullpath string, flag int, perm os.FileMode) (billy.File, error) {
-	if flag&os.O_RDWR != 0 || flag&os.O_WRONLY != 0 {
-		return nil, os.ErrPermission
-	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
 	dir, filename := filepath.Split(fullpath)
 	tree, err := fs.getTree(dir)
 	if err != nil {
 		return nil, err
 	}
-	node := tree.Find(filename)
-	if node == nil {
-		return nil, os.ErrNotExist
-	}
-	return newFile(fs, node)
+	return tree.OpenFile(fullpath, filename, flag, perm)
 }
 
 // Stat returns a FileInfo describing the named file.
 func (fs *Filesystem) Stat(fullpath string) (os.FileInfo, error) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
 	dir, filename := filepath.Split(fullpath)
 	tree, err := fs.getTree(dir)
 	if err != nil {
@@ -125,7 +143,23 @@ func (fs *Filesystem) Stat(fullpath string) (os.FileInfo, error) {
 // is not a directory, Rename replaces it. OS-specific restrictions may
 // apply when oldpath and newpath are in different directories.
 func (fs *Filesystem) Rename(oldpath, newpath string) error {
-	panic("Rename not implemented")
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	olddir, oldname := filepath.Split(oldpath)
+	oldtree, err := fs.getTree(olddir)
+	if err != nil {
+		return err
+	}
+	node := oldtree.Find(oldname)
+	if node == nil {
+		return os.ErrNotExist
+	}
+	newdir, newname := filepath.Split(newpath)
+	newtree, err := fs.getTree(newdir)
+	if err != nil {
+		return err
+	}
+	return node.Rename(newtree, newname)
 }
 
 // Remove removes the named file or directory.
@@ -159,46 +193,50 @@ func (fs *Filesystem) ReadDir(path string) ([]os.FileInfo, error) {
 // parents, and returns nil, or else returns an error. The permission bits
 // perm are used for all directories that MkdirAll creates. If path is/
 // already a directory, MkdirAll does nothing and returns nil.
-func (fs *Filesystem) MkdirAll(filename string, perm os.FileMode) error {
-	panic("MkDirAll not implemented")
-}
-
-func (fs *Filesystem) getTree(path string) (*restic.Tree, error) {
+func (fs *Filesystem) MkdirAll(path string, perm os.FileMode) error {
 	components := strings.Split(filepath.Clean(path), string(os.PathSeparator))
-	tree, err := fs.loadTreeByID(fs.rootTreeID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "root tree %v not found\n", fs.rootTreeID)
-		return nil, err
-	}
+	tree := fs.root
 	for _, component := range components {
 		if component == "" || component == "." {
 			continue
 		}
-		node := tree.Find(component)
-		if node == nil {
-			return nil, os.ErrNotExist
+		var err error
+		tree, err = tree.OpenSubtree(component, os.O_CREATE, perm)
+		if err != nil {
+			return err
 		}
-		if node.Type != "dir" {
-			return nil, os.ErrNotExist
+	}
+	return nil
+}
+
+// TempFile creates a new temporary file in the directory dir with a name
+// beginning with prefix, opens the file for reading and writing, and
+// returns the resulting *os.File. If dir is the empty string, TempFile
+// uses the default directory for temporary files (see os.TempDir).
+// Multiple programs calling TempFile simultaneously will not choose the
+// same file. The caller can use f.Name() to find the pathname of the file.
+// It is the caller's responsibility to remove the file when no longer
+// needed.
+func (fs *Filesystem) TempFile(dir, prefix string) (billy.File, error) {
+	if !fs.writable {
+		return nil, os.ErrPermission
+	}
+	return billyutil.TempFile(fs, dir, prefix)
+}
+
+func (fs *Filesystem) getTree(path string) (*resticTree, error) {
+	components := strings.Split(filepath.Clean(path), string(os.PathSeparator))
+	tree := fs.root
+	for _, component := range components {
+		if component == "" || component == "." {
+			continue
 		}
-		tree, err = fs.loadTreeByID(node.Subtree)
+		var err error
+		tree, err = tree.OpenSubtree(component, 0, 0)
 		if err != nil {
 			return nil, err
 		}
 	}
-	return tree, nil
-}
-
-// loadTree loads the tree specified by ID and populates the cache.
-func (fs *Filesystem) loadTreeByID(id *restic.ID) (*restic.Tree, error) {
-	if tree, ok := fs.loadedTrees[*id]; ok {
-		return tree, nil
-	}
-	tree, err := fs.repo.LoadTree(fs.ctx, *id)
-	if err != nil {
-		return nil, err
-	}
-	fs.loadedTrees[*id] = tree
 	return tree, nil
 }
 
@@ -216,31 +254,31 @@ func (fs *Filesystem) getBlob(id restic.ID) ([]byte, error) {
 }
 
 // NodeInfo satisfies os.FileInfo for a *restic.Node.
-type NodeInfo struct{ *restic.Node }
+type NodeInfo struct{ *resticNode }
 
 // Name satisfies os.FileInfo
 func (n NodeInfo) Name() string {
-	return n.Node.Name
+	return n.resticNode.Name
 }
 
 // Size satisfies os.FileInfo
 func (n NodeInfo) Size() int64 {
-	return int64(n.Node.Size)
+	return int64(n.resticNode.Size)
 }
 
 // Mode satisfies os.FileInfo
 func (n NodeInfo) Mode() os.FileMode {
-	return n.Node.Mode
+	return n.resticNode.Mode
 }
 
 // ModTime satisfies os.FileInfo
 func (n NodeInfo) ModTime() time.Time {
-	return n.Node.ModTime
+	return n.resticNode.ModTime
 }
 
 // IsDir satisfies os.FileInfo
 func (n NodeInfo) IsDir() bool {
-	return n.Node.Type == "dir"
+	return n.resticNode.Type == "dir"
 }
 
 // Sys satisfies os.FileInfo
