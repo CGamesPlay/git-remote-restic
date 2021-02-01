@@ -231,8 +231,26 @@ func (fs *Filesystem) Rename(oldpath, newpath string) (err error) {
 }
 
 // Remove removes the named file or directory.
-func (fs *Filesystem) Remove(filename string) error {
-	panic("Remove not implemented")
+func (fs *Filesystem) Remove(fullpath string) (err error) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if fs.Logger != nil {
+		defer func() {
+			fs.Logger.Printf("Remove(%#v) => %v\n", fullpath, err)
+		}()
+	}
+	dir, filename := filepath.Split(fullpath)
+	var tree *resticTree
+	tree, err = fs.getTree(dir)
+	if err != nil {
+		return err
+	}
+	node := tree.Find(filename)
+	if node == nil {
+		return os.ErrNotExist
+	}
+	tree.Remove(filename)
+	return nil
 }
 
 // Join joins any number of path elements into a single path, adding a

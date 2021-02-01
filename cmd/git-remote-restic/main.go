@@ -94,6 +94,9 @@ func cmdOption(command string) error {
 	case command == "progress true":
 		printProgress = true
 		goto ok
+	case command == "cloning true":
+		// Nothing different here
+		goto ok
 	case strings.HasPrefix(command, "verbosity "):
 		newV, err := strconv.Atoi(command[10:len(command)])
 		if err != nil {
@@ -218,7 +221,10 @@ func findPassword(url string) (string, error) {
 func Main() (err error) {
 	reader = bufio.NewReader(os.Stdin)
 
-	if len(os.Args) < 3 {
+	if len(os.Args) > 1 && os.Args[1] == "--version" {
+		PrintVersion()
+		return nil
+	} else if len(os.Args) < 3 {
 		return fmt.Errorf("Usage: %s remote-name url", os.Args[0])
 	}
 

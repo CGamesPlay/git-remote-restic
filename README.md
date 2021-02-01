@@ -1,33 +1,97 @@
 # git-remote-restic
 
-This is a prototype version of a git remote that stores data in a restic repository. The existing code is built on the git-remote-keybase and does some hacks to ease the integration with go-git. This is because go-git can act as a client for the git wire protocol, but [nothing exists to allow it to act as a server](https://github.com/go-git/go-git/issues/152).
+This program provides a bridge between git and [restic](https://restic.net). This bridge allows git to push and pull from a git repository stored inside of a restic repository.
+
+**Why?**
+
+Git, on its own, does not provide a feature to use an untrusted remote. That means that if you push a repository to a remote, the remote has full visibility into the content and history of the repository.
+
+Restic is a backup program specifically designed to store files securely in untrusted locations by using cryptography. By combining git and restic, users can store repositories securely on a variety of cloud providers using familiar tools: `git push` and `git pull`.
 
 ## Current status
 
-`cmd/git-remote-restic`
+Presently, `git-remote-restic` is functional and used by the author to keep secure backups of personal projects. For detailed information about future plans for the project, see [TODO.md](TODO.md).
 
-- Document how to use `git credential` to store the repo password.
+This program is based on a fork of restic and may not be up-to-date with the latest restic features, however the restic project is conscientious of backwards compatibility. Here is [the compatibility note from the documentation](https://restic.net/#compatibility).
 
-## Plan for pushing to restic
+> Once version 1.0.0 is released, we guarantee backward compatibility of all repositories within one major version; as long as we do not increment the major version, data can be read and restored. We strive to be fully backward compatible to all prior versions.
+>
+> During initial development (versions prior to 1.0.0), maintainers and developers will do their utmost to keep backwards compatibility and stability, although there might be breaking changes without increasing the major version.
 
-After looking through [git-remote-keybase](https://github.com/keybase/client/blob/cd76ccb97183c2be78b869fab9aed4b6f5b11086/go/kbfs/kbfsgit/runner.go), it looks like I'm overthinking things. What this program does is basically provide a VFS on kbfs, and then just push using go-git to a bare repository there. I could do a similar thing with restic, the basic process would look like this:
+Bug reports are accepted.
 
-- For a prototype, acquire an exclusive lock on the repository at this point.
-- Use go-git to push to a VFS that I write. Implement [go-billy](https://pkg.go.dev/github.com/go-git/go-billy/v5). Use [restic's fuse fs](https://github.com/restic/restic/blob/aa0faa8c7d7800b6ba7b11164fa2d3683f7f78aa/internal/fuse/dir.go#L65) as an example.
-- The VFS loads the latest snapshot to populate itself.
-- When the VFS writes a file, push it into the restic repository, but store the nodes in memory.
-- Create a new snapshot with the in-memory tree.
+## Usage
 
-Later, to implement multi-user features, the steps change.
+### Installation
 
-- Acquire an inclusive lock at the start, instead of an exclusive one.
-- Ensure that the VFS avoids re-uploading an object if it's already in the repository.
-- Before creating a snapshot, acquire an exclusive lock on the repository.
-- Find the new latest snapshot and recreate the base VFS layer from this snapshot.
-- Detect non-fast-forwards and fail the push if detected.
-- Create a new snapshot with the in-memory tree.
-- Otherwise, create a new snapshot with the latest tree.
+1. [Install restic](https://restic.net/#installation) using the provided instructions.
+2. Download a binary from [the releases page](https://github.com/CGamesPlay/git-remote-restic/releases) and place it in your PATH.
+   Alternatively, use `go get github.com/CGamesPlay/git-remote-restic`
 
-## Reference
+### Getting started
 
-Keybase code: [libgit](https://github.com/keybase/client/blob/cac9573e33f472fcb1417c1e6a899bfbba36405c/go/kbfs/libgit/), also check `kbfsgit` for the go-git application code.
+To use `git-remote-restic` with an existing git repository, first create a new restic repository to use, then push to it.
+
+```bash
+$ export RESTIC_REPOSITORY=s3:s3.amazonaws.com/my.bucket.name/path/to/repository
+$ restic init
+$ git remote add restic restic::$RESTIC_REPOSITORY
+$ git push restic
+```
+
+A restic repository compatible with `git-remote-restic` can contain only one git repository, therefore it's recommended to use a path prefix in the restic URL to allow one storage bucket to contain multiple restic repositories. For example, you may wish to use `s3:s3.amazonaws.com/my.bucket.name/git/$repo` to keep all of your repositories in one bucket.
+
+### Cloning from restic
+
+To use `git-remote-restic` with an existing restic repository, simply use `git clone` with the restic URL.
+
+```bash
+$ export RESTIC_REPOSITORY=s3:s3.amazonaws.com/my.bucket.name/path/to/repository
+$ git clone restic::$RESTIC_REPOSITORY
+```
+
+### Storing the repository password
+
+To avoid typing the repository password repeatedly, `git-remote-restic` provides several methods to store it.
+
+- If the environment variable `RESTIC_PASSWORD` is present, it specifies the password directly.
+- If the environment variable `RESTIC_PASSWORD_FILE` is present, it specifies a path to a file which contains the password.
+- Otherwise, [git credential](https://git-scm.com/docs/gitcredentials) provides the password.
+
+Users may be interested in [this guide from GitHub](https://docs.github.com/en/github/using-git/caching-your-github-credentials-in-git) on how to use the git credential system to store passwords. Note that `RESTIC_PASSWORD_COMMAND` from restic is not supported.
+
+### Verifying the repository
+
+To verify that a restic repository has a complete and consistent copy of the git repository, you can restore the snapshot and verify it using git.
+
+```bash
+$ restic restic latest --target repo.git
+$ cd repo.git
+$ git fsck --strict
+```
+
+Generally, restic is able to detect when a snapshot has been corrupted during the restore process, however by using `git fsck --strict` we can also verify that no problems have been introduced by `git-remote-restic`.
+
+## Technical details
+
+Any restic repository which contains a snapshot rooted to a bare git repository is usable with `git-remote-restic`. For example, the following is functionally identical to what `git-remote-restic` does when pushing to a repository:
+
+```bash
+$ git clone --bare . ../repo.git
+$ cd ../repo.git
+$ restic backup .
+```
+
+This means that all standard restic commands can be used to work with the restic repository, including snapshot forgetting, pruning, and other maintenance. Additionally, the following is functionally equivalent to what `git-remote-restic` does when cloning from a repository:
+
+```bash
+$ restic restore latest --target repo.git
+$ git clone repo.git repo
+```
+
+## Prior art
+
+There are other projects which fill a similar niche to `git-remote-restic`. Here are some of them, and the differences to `git-remote-restic`.
+
+- GPG-based. `git-gpg`, `git-remote-gcrypt` (and likely others) rely on GPG, which greatly increases the installation and usage complexity. With `git-remote-restic`, two binaries and a password are the only requirements.
+- Keybase. `git-remote-keybase` provides the same features as `git-remote-restic`, but the actual storage provider (Keybase's kbfs) is proprietary. With `git-remote-restic`, data can be hosted on a number of cloud storage providers, or [self-hosted](https://github.com/restic/rest-server).

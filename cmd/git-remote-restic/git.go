@@ -32,6 +32,13 @@ func init() {
 // them locally; implemented by "pushing" the refs from the restic repo into
 // the local repo.
 func FetchBatch(fetchSpecs [][]string) error {
+	lock, err := sharedRepo.Lock(false)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		sharedRepo.Unlock(lock)
+	}()
 	repo, err := sharedRepo.Git(false)
 	if err != nil {
 		return err

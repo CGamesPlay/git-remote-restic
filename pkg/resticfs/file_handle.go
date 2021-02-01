@@ -78,7 +78,8 @@ func (f *fileHandle) Write(p []byte) (int, error) {
 		return 0, os.ErrPermission
 	}
 	if f.flag&os.O_APPEND != 0 {
-		panic("need to atomically sync and write")
+		// Need to atomically seek and write when this flag is specified.
+		panic("O_APPEND not supported")
 	}
 	backing := f.n.Backing()
 	n, err := backing.Write(p)

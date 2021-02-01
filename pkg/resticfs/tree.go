@@ -156,7 +156,7 @@ func (t *resticTree) addNode(n *resticNode) {
 	t.markDirty()
 }
 
-func (t *resticTree) removeNode(name string) {
+func (t *resticTree) Remove(name string) {
 	var i int
 	for i = range t.Nodes {
 		if t.Nodes[i].Name == name {
@@ -245,7 +245,7 @@ func (n *resticNode) Rename(newtree *resticTree, newname string) error {
 		return os.ErrExist
 	}
 	if n.parent != newtree && n.parent != nil {
-		n.parent.removeNode(n.Node.Name)
+		n.parent.Remove(n.Node.Name)
 	}
 	n.Node.Name = newname
 	if n.parent != newtree {
