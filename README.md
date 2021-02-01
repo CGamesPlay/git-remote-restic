@@ -6,19 +6,9 @@ This is a prototype version of a git remote that stores data in a restic reposit
 
 `cmd/git-remote-restic`
 
-- Presently it's a mess of global variables and distributed state. Need to clean up the repository opening process; ideally a single API that returns a loaded `git.Repository` from a restic URL.
-
-`pkg/resticfs`
-
-- **Writable support is janky.** Outstanding issues:
-- All file metadata needs to be preserved properly
-- Snapshot metadata fields need to be incorporated properly
-
-### Making a writable filesystem
-
-There are some problems to be addressed when creating a writable filesystem:
-
-- Files opened for reading may have the backing data converted to a temporary file.
+- Need to build out the proper backend sources.
+- Add support for `RESTIC_PASSWORD` and `RESTIC_PASSWORD_FILE`.
+- Document how to use `git credential` to store the repo password.
 
 ## Plan for pushing to restic
 

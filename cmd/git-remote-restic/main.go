@@ -9,19 +9,19 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/pkg/errors"
-	"github.com/restic/restic/lib/restic"
+	"github.com/restic/restic/lib/repository"
 )
 
+var sharedRepo *Repository
 var remoteName plumbing.ReferenceName
-var resticRepo restic.Repository
 var reader *bufio.Reader
 var printProgress = false
 var verbosity = 1
 var globalCtx = context.Background()
-var followTags = false
 
 func cmdCapabilities() error {
 	fmt.Printf("fetch\n")
@@ -32,7 +32,15 @@ func cmdCapabilities() error {
 }
 
 func cmdList(forPush bool) error {
-	refs, err := remoteGitRepo.References()
+	repo, err := sharedRepo.Git(false)
+	if err == git.ErrRepositoryNotExists {
+		fmt.Print("\n")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	refs, err := repo.References()
 	if err != nil {
 		return err
 	}
@@ -93,19 +101,6 @@ func cmdOption(command string) error {
 		}
 		verbosity = newV
 		goto ok
-	case strings.HasPrefix(command, "followtags "):
-		panic("tagmode!")
-		val := command[11:len(command)]
-		switch val {
-		case "true":
-			followTags = true
-			goto ok
-		case "false":
-			followTags = false
-			goto ok
-		default:
-			fmt.Printf("error invalid followtags %#v", val)
-		}
 	case false == true:
 		// This tells go-vet that the panic below is "reachable".
 	default:
@@ -210,20 +205,19 @@ func Main() (err error) {
 	remoteName = plumbing.ReferenceName(os.Args[1])
 	url := os.Args[2]
 
-	if resticRepo, err = openRepository(url); err != nil {
-		return err
-	}
-	if err := initRemoteGitRepo(); err != nil {
+	password, err := getGitCredential(url)
+	if err != nil {
 		return err
 	}
 
-	gitDir := os.Getenv("GIT_DIR")
-	if gitDir == "" {
-		gitDir = ".git"
-		if _, err := os.Stat(gitDir); os.IsNotExist(err) {
-			return fmt.Errorf("GIT_DIR not set and no .git directory exists")
+	sharedRepo, err = NewRepository(context.Background(), url, password)
+	if err != nil {
+		if err == repository.ErrNoKeyFound {
+			confirmGitCredential(url, false)
 		}
+		return err
 	}
+	confirmGitCredential(url, true)
 
 	for {
 		// Note that command will include the trailing newline.

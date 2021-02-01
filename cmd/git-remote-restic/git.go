@@ -1,23 +1,23 @@
 package main
 
 import (
-	"context"
+	"bufio"
+	"bytes"
 	"fmt"
+	urlparser "net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 
-	"github.com/CGamesPlay/git-remote-restic/pkg/resticfs"
-	"github.com/go-git/go-billy/v5/helper/polyfill"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/cache"
-	gitfs "github.com/go-git/go-git/v5/storage/filesystem"
 	"github.com/pkg/errors"
-	"github.com/restic/restic/lib/restic"
 )
 
 var localGitPath string
-var remoteGitRepo *git.Repository
+var returnedCredentials string
 
 const anonymous = "anonymous"
 
@@ -28,42 +28,15 @@ func init() {
 	}
 }
 
-func initRemoteGitRepo() error {
-	if remoteGitRepo != nil {
-		return nil
-	}
-	var parentSnapshot *restic.ID
-	id, err := restic.FindLatestSnapshot(context.Background(), resticRepo, nil, nil, nil)
-	if err != nil && err != restic.ErrNoSnapshotFound {
-		return err
-	}
-	if err == nil {
-		parentSnapshot = &id
-	}
-	fs, err := resticfs.New(context.Background(), resticRepo, parentSnapshot)
+// FetchBatch is reponsible for fetching a batch of remote refs and storing
+// them locally; implemented by "pushing" the refs from the restic repo into
+// the local repo.
+func FetchBatch(fetchSpecs [][]string) error {
+	repo, err := sharedRepo.Git(false)
 	if err != nil {
 		return err
 	}
-	fs.StartNewSnapshot()
-	pf := polyfill.New(fs)
-	s := gitfs.NewStorageWithOptions(pf, cache.NewObjectLRUDefault(), gitfs.Options{KeepDescriptors: true})
-	if parentSnapshot == nil {
-		remoteGitRepo, err = git.Init(s, pf)
-	} else {
-		remoteGitRepo, err = git.Open(s, pf)
-	}
-	return err
-}
-
-// FetchBatch is reponsible for fetching a batch of remote refs and storing
-// them locally.
-func FetchBatch(fetchSpecs [][]string) error {
-	// Go-git's high-level API doesn't support the case where the "remote"
-	// repository is backed by a custom VFS, so we do operations in reverse:
-	// when pushing to restic, we actually pull from the local repository; and
-	// vice versa.
-
-	remote, err := remoteGitRepo.CreateRemoteAnonymous(&config.RemoteConfig{
+	remote, err := repo.CreateRemoteAnonymous(&config.RemoteConfig{
 		Name: anonymous,
 		URLs: []string{localGitPath},
 	})
@@ -111,9 +84,24 @@ func FetchBatch(fetchSpecs [][]string) error {
 	return nil
 }
 
-// PushBatch is responsible for pushing a set of refs to the restic remote.
+// PushBatch is responsible for pushing a set of refs to the restic remote;
+// implemented by "pulling" the refs from the local repository into the restic
+// repo.
 func PushBatch(refspecs []config.RefSpec) (map[string]error, error) {
-	remote, err := remoteGitRepo.CreateRemoteAnonymous(&config.RemoteConfig{
+	lock, err := sharedRepo.Lock(true)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		sharedRepo.Unlock(lock)
+	}()
+	sharedRepo.fs.StartNewSnapshot()
+
+	repo, err := sharedRepo.Git(true)
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to open git remote")
+	}
+	remote, err := repo.CreateRemoteAnonymous(&config.RemoteConfig{
 		Name: anonymous,
 		URLs: []string{localGitPath},
 	})
@@ -128,7 +116,7 @@ func PushBatch(refspecs []config.RefSpec) (map[string]error, error) {
 	fetchRefspecs := make([]config.RefSpec, 0, len(refspecs))
 	for _, refspec := range refspecs {
 		if refspec.IsDelete() {
-			err := remoteGitRepo.Storer.RemoveReference(refspec.Dst(""))
+			err := repo.Storer.RemoveReference(refspec.Dst(""))
 			if err == git.NoErrAlreadyUpToDate {
 				err = nil
 			}
@@ -153,5 +141,60 @@ func PushBatch(refspecs []config.RefSpec) (map[string]error, error) {
 			results[refspec.Dst("").String()] = err
 		}
 	}
+
+	_, err = sharedRepo.fs.CommitSnapshot(localGitPath, []string{})
+	if err != nil {
+		return nil, err
+	}
+
 	return results, nil
+}
+
+func gitBin() string {
+	gitExec := os.Getenv("GIT_EXEC_PATH")
+	return filepath.Join(gitExec, "git")
+}
+
+func getGitCredential(urlStr string) (string, error) {
+	url, err := urlparser.Parse(urlStr)
+	if err != nil {
+		Warnf("%s\n", urlStr)
+		return "", err
+	}
+	input := fmt.Sprintf("protocol=%s\nhost=%s\npath=%s\nusername=%s\n\n", "restic", "none", url.Opaque, url.User.Username())
+	cmd := exec.Command(gitBin(), "credential", "fill")
+	cmd.Stdin = strings.NewReader(input)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err = cmd.Run()
+	if err != nil {
+		return "", err
+	}
+	returnedCredentials = string(out.Bytes())
+	reader := bufio.NewReader(&out)
+	for {
+		prefix, err := reader.ReadString('=')
+		if err != nil {
+			return "", err
+		}
+		argument, err := reader.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		if prefix == "password=" {
+			return argument[:len(argument)-1], nil
+		}
+	}
+}
+
+func confirmGitCredential(url string, success bool) error {
+	var action = "reject"
+	if success {
+		action = "approve"
+	}
+	cmd := exec.Command(gitBin(), "credential", action)
+	cmd.Stdin = strings.NewReader(returnedCredentials)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	return cmd.Run()
 }

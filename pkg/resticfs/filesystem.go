@@ -2,8 +2,11 @@ package resticfs
 
 import (
 	"context"
+	"log"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +21,25 @@ import (
 // blobCacheSize specifies the maximum size in bytes of the blob cache.
 // Currently hardcoded to 64 MiB.
 const blobCacheSize = 64 << 20
+
+var uid, gid uint32
+var userName, groupName, hostname string
+
+func init() {
+	uid = uint32(os.Getuid())
+	u, err := user.Current()
+	if err == nil {
+		userName = u.Username
+	}
+
+	gid = uint32(os.Getgid())
+	g, err := user.LookupGroupId(strconv.Itoa(int(gid)))
+	if err == nil {
+		groupName = g.Name
+	}
+
+	hostname, _ = os.Hostname()
+}
 
 // Filesystem satisfies billy.Filesystem and allows reading and writing restic
 // snapshots. By default, Filesystems are read-only, writing can be enabled
@@ -35,8 +57,10 @@ type Filesystem struct {
 	// Filesystem. The default value for Temporary is an osfs.FileSystem, but a
 	// custom value can be provided here.
 	Temporary billy.Filesystem
-	chunker   *chunker.Chunker
-	buf       []byte
+	// Logger can be provided to enable detailed logging of operations.
+	Logger  *log.Logger
+	chunker *chunker.Chunker
+	buf     []byte
 }
 
 var _ billy.Basic = (*Filesystem)(nil)
@@ -74,19 +98,39 @@ func New(ctx context.Context, repo restic.Repository, parentSnapshotID *restic.I
 // is closed is the data actually written to the restic repository. Further,
 // the data will be orphaned until the CommitSnapshot method is called.
 func (fs *Filesystem) StartNewSnapshot() {
+	if fs.Logger != nil {
+		fs.Logger.Printf("StartNewSnapshot()\n")
+	}
 	fs.writable = true
 }
 
-// CommitSnapshot isn't implemented. We probably want to actually update the
-// existing snapshot here.
-func (fs *Filesystem) CommitSnapshot() (restic.ID, error) {
+// CommitSnapshot commits all pending changes to restic, then saves the
+// resulting as a tree as a new snapshot.
+func (fs *Filesystem) CommitSnapshot(gitDir string, tags []string) (id restic.ID, err error) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
-	tree, err := fs.root.Commit()
+	if fs.Logger != nil {
+		defer func() {
+			var val interface{}
+			if err != nil {
+				val = err
+			} else {
+				val = &id
+			}
+			fs.Logger.Printf("CommitSnapshot() => %v\n", val)
+		}()
+	}
+	var tree restic.ID
+	var snapshot *restic.Snapshot
+	tree, err = fs.root.Commit()
 	if err != nil {
 		return restic.ID{}, err
 	}
-	snapshot, err := restic.NewSnapshot([]string{"git"}, []string{}, "hostname", time.Now())
+	err = fs.repo.Flush(fs.ctx)
+	if err != nil {
+		return restic.ID{}, err
+	}
+	snapshot, err = restic.NewSnapshot([]string{gitDir}, tags, hostname, time.Now())
 	if err != nil {
 		return restic.ID{}, err
 	}
@@ -112,21 +156,39 @@ func (fs *Filesystem) Open(filename string) (billy.File, error) {
 // instead. It opens the named file with specified flag (O_RDONLY etc.) and
 // perm, (0666 etc.) if applicable. If successful, methods on the returned
 // File can be used for I/O.
-func (fs *Filesystem) OpenFile(fullpath string, flag int, perm os.FileMode) (billy.File, error) {
+func (fs *Filesystem) OpenFile(fullpath string, flag int, perm os.FileMode) (file billy.File, err error) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
+	if fs.Logger != nil {
+		defer func() {
+			fs.Logger.Printf("OpenFile(%#v, %x, 0%03o) => %v\n", fullpath, flag, perm, err)
+		}()
+	}
 	dir, filename := filepath.Split(fullpath)
-	tree, err := fs.getTree(dir)
+	var tree *resticTree
+	tree, err = fs.getTree(dir)
 	if err != nil {
 		return nil, err
 	}
-	return tree.OpenFile(fullpath, filename, flag, perm)
+	file, err = tree.OpenFile(fullpath, filename, flag, perm)
+	return file, err
 }
 
 // Stat returns a FileInfo describing the named file.
-func (fs *Filesystem) Stat(fullpath string) (os.FileInfo, error) {
+func (fs *Filesystem) Stat(fullpath string) (fi os.FileInfo, err error) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
+	if fs.Logger != nil {
+		defer func() {
+			var val interface{}
+			if err != nil {
+				val = err
+			} else {
+				val = fi
+			}
+			fs.Logger.Printf("Stat(%#v) => %v\n", fullpath, val)
+		}()
+	}
 	dir, filename := filepath.Split(fullpath)
 	tree, err := fs.getTree(dir)
 	if err != nil {
@@ -142,11 +204,17 @@ func (fs *Filesystem) Stat(fullpath string) (os.FileInfo, error) {
 // Rename renames (moves) oldpath to newpath. If newpath already exists and
 // is not a directory, Rename replaces it. OS-specific restrictions may
 // apply when oldpath and newpath are in different directories.
-func (fs *Filesystem) Rename(oldpath, newpath string) error {
+func (fs *Filesystem) Rename(oldpath, newpath string) (err error) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
+	if fs.Logger != nil {
+		defer func() {
+			fs.Logger.Printf("Rename(%#v, %#v) => %v\n", oldpath, newpath, err)
+		}()
+	}
+	var oldtree, newtree *resticTree
 	olddir, oldname := filepath.Split(oldpath)
-	oldtree, err := fs.getTree(olddir)
+	oldtree, err = fs.getTree(olddir)
 	if err != nil {
 		return err
 	}
@@ -155,7 +223,7 @@ func (fs *Filesystem) Rename(oldpath, newpath string) error {
 		return os.ErrNotExist
 	}
 	newdir, newname := filepath.Split(newpath)
-	newtree, err := fs.getTree(newdir)
+	newtree, err = fs.getTree(newdir)
 	if err != nil {
 		return err
 	}
@@ -177,12 +245,26 @@ func (fs *Filesystem) Join(elem ...string) string {
 
 // ReadDir reads the directory named by dirname and returns a list of
 // directory entries sorted by filename.
-func (fs *Filesystem) ReadDir(path string) ([]os.FileInfo, error) {
-	tree, err := fs.getTree(path)
+func (fs *Filesystem) ReadDir(path string) (result []os.FileInfo, err error) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if fs.Logger != nil {
+		defer func() {
+			var val interface{}
+			if err != nil {
+				val = err
+			} else {
+				val = result
+			}
+			fs.Logger.Printf("ReadDir(%#v) => %v\n", path, val)
+		}()
+	}
+	var tree *resticTree
+	tree, err = fs.getTree(path)
 	if err != nil {
 		return nil, err
 	}
-	result := make([]os.FileInfo, len(tree.Nodes))
+	result = make([]os.FileInfo, len(tree.Nodes))
 	for i, node := range tree.Nodes {
 		result[i] = NodeInfo{node}
 	}
@@ -193,20 +275,24 @@ func (fs *Filesystem) ReadDir(path string) ([]os.FileInfo, error) {
 // parents, and returns nil, or else returns an error. The permission bits
 // perm are used for all directories that MkdirAll creates. If path is/
 // already a directory, MkdirAll does nothing and returns nil.
-func (fs *Filesystem) MkdirAll(path string, perm os.FileMode) error {
+func (fs *Filesystem) MkdirAll(path string, perm os.FileMode) (err error) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
 	components := strings.Split(filepath.Clean(path), string(os.PathSeparator))
 	tree := fs.root
 	for _, component := range components {
 		if component == "" || component == "." {
 			continue
 		}
-		var err error
 		tree, err = tree.OpenSubtree(component, os.O_CREATE, perm)
 		if err != nil {
-			return err
+			break
 		}
 	}
-	return nil
+	if fs.Logger != nil {
+		fs.Logger.Printf("MkdirAll(%#v, 0%03o) => %v\n", path, perm, err)
+	}
+	return err
 }
 
 // TempFile creates a new temporary file in the directory dir with a name

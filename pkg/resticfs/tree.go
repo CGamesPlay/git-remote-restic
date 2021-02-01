@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/go-git/go-billy/v5"
 	"github.com/restic/chunker"
@@ -15,6 +16,7 @@ import (
 )
 
 const oWRITEABLE = os.O_RDWR | os.O_WRONLY
+const uMask = os.FileMode(0002)
 
 // ErrInUse indicates that a snapshot couldn't be made because of ongoing
 // writes.
@@ -78,7 +80,7 @@ func (t *resticTree) OpenSubtree(name string, flag int, perm os.FileMode) (*rest
 			if !t.fs.writable {
 				return nil, os.ErrPermission
 			}
-			n = newDirectory(t.fs, t, name)
+			n = newDirectory(t.fs, t, name, perm)
 		} else {
 			return nil, os.ErrNotExist
 		}
@@ -96,7 +98,7 @@ func (t *resticTree) OpenFile(original string, name string, flag int, perm os.Fi
 			if !t.fs.writable {
 				return nil, os.ErrPermission
 			}
-			node = newFile(t.fs, t, name)
+			node = newFile(t.fs, t, name, perm)
 		} else {
 			return nil, os.ErrNotExist
 		}
@@ -194,13 +196,21 @@ func newFromNode(fs *Filesystem, parent *resticTree, node *restic.Node) *resticN
 	return n
 }
 
-func newDirectory(fs *Filesystem, parent *resticTree, name string) *resticNode {
+func newDirectory(fs *Filesystem, parent *resticTree, name string, perm os.FileMode) *resticNode {
 	n := &resticNode{
 		fs:     fs,
 		parent: parent,
 		Node: restic.Node{
-			Name: name,
-			Type: "dir",
+			Name:       name,
+			Type:       "dir",
+			Mode:       perm & ^uMask,
+			ModTime:    time.Now(),
+			AccessTime: time.Now(),
+			ChangeTime: time.Now(),
+			UID:        uid,
+			GID:        gid,
+			User:       userName,
+			Group:      groupName,
 		},
 		subtree: newTree(fs, parent),
 	}
@@ -208,13 +218,21 @@ func newDirectory(fs *Filesystem, parent *resticTree, name string) *resticNode {
 	return n
 }
 
-func newFile(fs *Filesystem, parent *resticTree, name string) *resticNode {
+func newFile(fs *Filesystem, parent *resticTree, name string, perm os.FileMode) *resticNode {
 	n := &resticNode{
 		fs:     fs,
 		parent: parent,
 		Node: restic.Node{
-			Name: name,
-			Type: "file",
+			Name:       name,
+			Type:       "file",
+			Mode:       perm & ^uMask,
+			ModTime:    time.Now(),
+			AccessTime: time.Now(),
+			ChangeTime: time.Now(),
+			UID:        uid,
+			GID:        gid,
+			User:       userName,
+			Group:      groupName,
 		},
 	}
 	parent.addNode(n)
@@ -316,7 +334,12 @@ func (n *resticNode) SetBacking(val billy.File) {
 }
 
 // Commit will persist any modifications to the restic repository.
-func (n *resticNode) Commit() error {
+func (n *resticNode) Commit() (err error) {
+	if n.fs.Logger != nil {
+		defer func() {
+			n.fs.Logger.Printf("(*resticNode)(%p).Commit() => %v\n", n, err)
+		}()
+	}
 	switch n.Node.Type {
 	case "file":
 		if n.Node.Content != nil {
@@ -329,6 +352,7 @@ func (n *resticNode) Commit() error {
 			// behavior.
 			return ErrInUse
 		}
+		n.Node.Size = 0
 		rd := n.Backing()
 		rd.Seek(0, io.SeekStart)
 		if n.fs.buf == nil {
@@ -347,6 +371,7 @@ func (n *resticNode) Commit() error {
 			} else if err != nil {
 				return err
 			}
+			n.Node.Size += uint64(chunk.Length)
 
 			id := restic.Hash(chunk.Data)
 			if !n.fs.repo.Index().Has(restic.BlobHandle{ID: id, Type: restic.DataBlob}) {
@@ -360,11 +385,12 @@ func (n *resticNode) Commit() error {
 			blobs = append(blobs, id)
 		}
 		n.Node.Content = blobs
-		backing, err := newResticFile(n.fs, n)
-		if err != nil {
-			return err
-		}
-		n.SetBacking(backing)
+		// We need to switch back to the read-only backing, but the node data
+		// isn't yet fully committed to restic yet. When the full commit
+		// finishes, the next call to open will open the file read-only.
+		// XXX - we've invalidated the backing so all open handles are now
+		// invalid and will segfault.
+		n.SetBacking(nil)
 		return nil
 	case "dir":
 		id, err := n.subtree.Commit()
