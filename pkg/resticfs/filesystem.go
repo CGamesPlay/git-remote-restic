@@ -112,7 +112,7 @@ func (fs *Filesystem) StartNewSnapshot() {
 // CommitSnapshot commits all pending changes to restic, then saves the
 // resulting as a tree as a new snapshot. May return ErrNoChanges if commiting
 // a snapshot would be redundant.
-func (fs *Filesystem) CommitSnapshot(gitDir string, tags []string) (id restic.ID, err error) {
+func (fs *Filesystem) CommitSnapshot(path string, tags []string) (id restic.ID, err error) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	if fs.Logger != nil {
@@ -139,7 +139,7 @@ func (fs *Filesystem) CommitSnapshot(gitDir string, tags []string) (id restic.ID
 	if err != nil {
 		return restic.ID{}, err
 	}
-	snapshot, err = restic.NewSnapshot([]string{gitDir}, tags, hostname, time.Now())
+	snapshot, err = restic.NewSnapshot([]string{path}, tags, hostname, time.Now())
 	if err != nil {
 		return restic.ID{}, err
 	}

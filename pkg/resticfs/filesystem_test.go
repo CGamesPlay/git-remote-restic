@@ -140,7 +140,7 @@ func TestWriteFile(t *testing.T) {
 	err = file.Close()
 	require.NoError(t, err)
 
-	id, err := fs.CommitSnapshot()
+	id, err := fs.CommitSnapshot("/tmp", []string{})
 	require.NoError(t, err)
 	require.NotEmpty(t, id)
 }
@@ -161,7 +161,7 @@ func TestMkdirAll(t *testing.T) {
 	err = fs.MkdirAll("foo/bar/file-1", 0777)
 	require.Equal(t, err, ErrNotDirectory)
 
-	id, err := fs.CommitSnapshot()
+	id, err := fs.CommitSnapshot("/tmp", []string{})
 	require.NoError(t, err)
 	require.NotEmpty(t, id)
 }
