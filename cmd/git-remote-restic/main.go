@@ -97,6 +97,9 @@ func cmdOption(command string) error {
 	case command == "cloning true":
 		// Nothing different here
 		goto ok
+	case command == "followtags true":
+		// Nothing different here
+		goto ok
 	case strings.HasPrefix(command, "verbosity "):
 		newV, err := strconv.Atoi(command[10:len(command)])
 		if err != nil {
@@ -144,7 +147,7 @@ loop:
 		case command == "\n":
 			break loop
 		default:
-			return fmt.Errorf("unknown push command %q", command)
+			return fmt.Errorf("unknown fetch command %q", command)
 		}
 	}
 
@@ -191,7 +194,7 @@ loop:
 		if err == nil {
 			fmt.Printf("ok %s\n", dst)
 		} else {
-			fmt.Printf("error %s %#v\n", dst, err)
+			fmt.Printf("error %s %#v\n", dst, err.Error())
 		}
 	}
 	fmt.Printf("\n")

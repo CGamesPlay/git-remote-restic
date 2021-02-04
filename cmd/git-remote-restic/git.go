@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/CGamesPlay/git-remote-restic/pkg/resticfs"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -122,12 +123,17 @@ func PushBatch(refspecs []config.RefSpec) (map[string]error, error) {
 	// reverse, which actually need to be fetched.
 	fetchRefspecs := make([]config.RefSpec, 0, len(refspecs))
 	for _, refspec := range refspecs {
+		dst := refspec.Dst("")
 		if refspec.IsDelete() {
-			err := repo.Storer.RemoveReference(refspec.Dst(""))
+			if refspec.IsWildcard() {
+				results[dst.String()] = fmt.Errorf("wildcards (%#v) not supported for deletes", refspec)
+				continue
+			}
+			err := repo.Storer.RemoveReference(dst)
 			if err == git.NoErrAlreadyUpToDate {
 				err = nil
 			}
-			results[refspec.Dst("").String()] = err
+			results[dst.String()] = err
 		} else {
 			fetchRefspecs = append(fetchRefspecs, refspec.Reverse())
 		}
@@ -136,8 +142,6 @@ func PushBatch(refspecs []config.RefSpec) (map[string]error, error) {
 	err = remote.FetchContext(globalCtx, &git.FetchOptions{
 		RemoteName: anonymous,
 		RefSpecs:   refspecs,
-		Tags:       git.NoTags, // TODO - implement
-		Force:      false,      // TODO - implement
 	})
 	if err == git.NoErrAlreadyUpToDate {
 		err = nil
@@ -150,7 +154,7 @@ func PushBatch(refspecs []config.RefSpec) (map[string]error, error) {
 	}
 
 	_, err = sharedRepo.fs.CommitSnapshot(localGitPath, []string{})
-	if err != nil {
+	if err != nil && err != resticfs.ErrNoChanges {
 		return nil, err
 	}
 

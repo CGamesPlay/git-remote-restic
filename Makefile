@@ -1,7 +1,7 @@
 PKG=github.com/CGamesPlay/git-remote-restic
 SOURCES = $(shell find . -name '*.go') go.mod go.sum
 RESTIC_VERSION = $(shell cat restic/VERSION)
-GOFLAGS_debug = -ldflags '-X "main.Version=$(shell git rev-parse --short HEAD; [ -z "$(git status --porcelain)" ] && echo ' with uncommitted changes')" -X "main.ResticVersion=$(RESTIC_VERSION)"'
+GOFLAGS_debug = -ldflags '-X "main.Version=$(shell git rev-parse --short HEAD; [ -z "$$(git status --porcelain --untracked-files=no)" ] || echo 'with uncommitted changes')" -X "main.ResticVersion=$(RESTIC_VERSION)"'
 GOFLAGS_release = -ldflags '-s -w -extldflags "-static" -X "main.Version=$(shell cat VERSION)" -X "main.ResticVersion=$(RESTIC_VERSION)"'
 
 .PHONY: install

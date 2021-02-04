@@ -2,6 +2,7 @@ package resticfs
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"os/user"
@@ -24,6 +25,10 @@ const blobCacheSize = 64 << 20
 
 var uid, gid uint32
 var userName, groupName, hostname string
+
+// ErrNoChanges indicates that a snapshot was not created because it would be
+// identical to the parent snapshot.
+var ErrNoChanges = errors.New("no changes to commit")
 
 func init() {
 	uid = uint32(os.Getuid())
@@ -105,7 +110,8 @@ func (fs *Filesystem) StartNewSnapshot() {
 }
 
 // CommitSnapshot commits all pending changes to restic, then saves the
-// resulting as a tree as a new snapshot.
+// resulting as a tree as a new snapshot. May return ErrNoChanges if commiting
+// a snapshot would be redundant.
 func (fs *Filesystem) CommitSnapshot(gitDir string, tags []string) (id restic.ID, err error) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
@@ -119,6 +125,9 @@ func (fs *Filesystem) CommitSnapshot(gitDir string, tags []string) (id restic.ID
 			}
 			fs.Logger.Printf("CommitSnapshot() => %v\n", val)
 		}()
+	}
+	if !fs.root.IsDirty() {
+		return restic.ID{}, ErrNoChanges
 	}
 	var tree restic.ID
 	var snapshot *restic.Snapshot

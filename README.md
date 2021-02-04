@@ -89,6 +89,10 @@ $ restic restore latest --target repo.git
 $ git clone repo.git repo
 ```
 
+### Limitations
+
+**You can't push a SHA1 without storing it in a temporary branch.** The underlying git library used in this project requires that we operate in reverse: when pushing to a restic repository, we metaphorically "cd" into the restic repository and then "fetch" the requested refs from the local one. Because of this behavior, it's not valid to push a SHA1 directly (because it's not valid to fetch a SHA1 directly). If you need to do this, you have to create a temporary branch, push, then delete the temporary branch.
+
 ## Prior art
 
 There are other projects which fill a similar niche to `git-remote-restic`. Here are some of them, and the differences to `git-remote-restic`.

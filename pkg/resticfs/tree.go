@@ -171,6 +171,10 @@ func (t *resticTree) Remove(name string) {
 	t.markDirty()
 }
 
+func (t *resticTree) IsDirty() bool {
+	return t.ID == nil
+}
+
 func (t *resticTree) markDirty() {
 	for t != nil {
 		t.ID = nil
