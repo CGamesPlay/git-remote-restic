@@ -397,6 +397,13 @@ func (n *resticNode) Commit() (err error) {
 		n.SetBacking(nil)
 		return nil
 	case "dir":
+		if n.subtree == nil {
+			// Dir was never opened
+			if n.Node.Subtree == nil {
+				panic("no data for subtree")
+			}
+			return nil
+		}
 		id, err := n.subtree.Commit()
 		if err == nil {
 			n.Node.Subtree = &id
