@@ -4,7 +4,7 @@ This document lists the major items in `git-remote-restic` which still need to b
 
 **Incomplete features:**
 
-- Very few automated tests are presently written. Manual testing has been performed to confirm that the software works on a variety of repositories.
+- More automated tests are needed. Presently there is a small suite of end-to-end tests that verify that cloning, pushing, and restoration work properly. Manual testing has been performed to confirm that the software works on a variety of repositories.
 - Restic is not optimized for repositories with hundreds or thousands of snapshots. The program should automatically remove old snapshots with some user configurable parameters. Note that in `git-remote-restic`, each snapshot has the full repository history (modulo history rewriting), so old snapshots are generally redundant anyways. 
 - Git repositories which have many branches being created and removed do occasionally require maintenance in the form of `git gc`. Some thought is required on how that process should work in `git-remote-restic`, however it's lower priority since the target use case is archival rather than active development.
 - Multi-user pushes.
