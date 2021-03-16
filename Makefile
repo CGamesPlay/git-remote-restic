@@ -11,6 +11,7 @@ install:
 .PHONY: test
 test: install
 	go test $(PKG)/...
+	./fixtures/test.sh
 
 .PHONY: release
 release: bin/darwin_amd64.tar.gz bin/linux_amd64.tar.gz
