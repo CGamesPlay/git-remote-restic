@@ -12,6 +12,7 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/restic/chunker v0.4.0
 	github.com/restic/restic v0.0.0-00010101000000-000000000000
-	github.com/stretchr/testify v1.6.1
+	github.com/stretchr/testify v1.7.0
+	golang.org/x/sync v0.0.0-20220819030929-7fc1605a5dde
 	gopkg.in/src-d/go-billy.v4 v4.3.2 // indirect
 )

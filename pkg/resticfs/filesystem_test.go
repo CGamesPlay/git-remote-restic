@@ -47,7 +47,13 @@ func openBasicRepo() *Filesystem {
 	if be, err = local.Open(testCtx, config.(local.Config)); err != nil {
 		panic(err)
 	}
-	repo := repository.New(be)
+	repo, err := repository.New(be, repository.Options{
+		Compression: repository.CompressionOff,
+		PackSize:    0,
+	})
+	if err != nil {
+		panic(err)
+	}
 	if err = repo.SearchKey(testCtx, basicRepoPassword, 0, ""); err != nil {
 		panic(err)
 	}
@@ -56,7 +62,7 @@ func openBasicRepo() *Filesystem {
 		panic(err)
 	}
 
-	id, err := restic.FindLatestSnapshot(testCtx, repo, nil, nil, nil)
+	id, err := restic.FindLatestSnapshot(testCtx, repo.Backend(), repo, nil, nil, nil, nil)
 	if err != nil {
 		panic(err)
 	}

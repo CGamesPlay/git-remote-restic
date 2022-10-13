@@ -43,7 +43,7 @@ func newTree(fs *Filesystem, parent *resticTree) *resticTree {
 }
 
 func openTree(fs *Filesystem, parent *resticTree, original restic.ID) (*resticTree, error) {
-	tree, err := fs.repo.LoadTree(fs.ctx, original)
+	tree, err := restic.LoadTree(fs.ctx, fs.repo, original)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +135,7 @@ func (t *resticTree) Commit() (restic.ID, error) {
 	if t.fs.repo.Index().Has(restic.BlobHandle{ID: id, Type: restic.TreeBlob}) {
 		goto success
 	}
-	_, _, err = t.fs.repo.SaveBlob(t.fs.ctx, restic.TreeBlob, data, id, false)
+	_, _, _, err = t.fs.repo.SaveBlob(t.fs.ctx, restic.TreeBlob, data, id, false)
 	if err != nil {
 		return restic.ID{}, err
 	}
@@ -379,7 +379,7 @@ func (n *resticNode) Commit() (err error) {
 
 			id := restic.Hash(chunk.Data)
 			if !n.fs.repo.Index().Has(restic.BlobHandle{ID: id, Type: restic.DataBlob}) {
-				_, _, err := n.fs.repo.SaveBlob(n.fs.ctx, restic.DataBlob, chunk.Data, id, true)
+				_, _, _, err := n.fs.repo.SaveBlob(n.fs.ctx, restic.DataBlob, chunk.Data, id, true)
 				if err != nil {
 					return err
 				}

@@ -17,6 +17,7 @@ import (
 	billyutil "github.com/go-git/go-billy/v5/util"
 	"github.com/restic/chunker"
 	"github.com/restic/restic/lib/restic"
+	"golang.org/x/sync/errgroup"
 )
 
 // blobCacheSize specifies the maximum size in bytes of the blob cache.
@@ -129,6 +130,8 @@ func (fs *Filesystem) CommitSnapshot(path string, tags []string) (id restic.ID, 
 	if !fs.root.IsDirty() {
 		return restic.ID{}, ErrNoChanges
 	}
+	wg, ctx := errgroup.WithContext(fs.ctx)
+	fs.repo.StartPackUploader(ctx, wg)
 	var tree restic.ID
 	var snapshot *restic.Snapshot
 	tree, err = fs.root.Commit()
@@ -144,7 +147,14 @@ func (fs *Filesystem) CommitSnapshot(path string, tags []string) (id restic.ID, 
 		return restic.ID{}, err
 	}
 	snapshot.Tree = &tree
-	return fs.repo.SaveJSONUnpacked(fs.ctx, restic.SnapshotFile, snapshot)
+	id, err = restic.SaveSnapshot(fs.ctx, fs.repo, snapshot)
+	if err != nil {
+		return restic.ID{}, err
+	}
+	if err := wg.Wait(); err != nil {
+		return restic.ID{}, err
+	}
+	return id, nil
 }
 
 // Create creates the named file with mode 0666 (before umask), truncating

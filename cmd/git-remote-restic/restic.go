@@ -9,6 +9,7 @@ import (
 	"github.com/restic/restic/lib/backend/azure"
 	"github.com/restic/restic/lib/backend/b2"
 	"github.com/restic/restic/lib/backend/gs"
+	"github.com/restic/restic/lib/backend/limiter"
 	"github.com/restic/restic/lib/backend/local"
 	"github.com/restic/restic/lib/backend/location"
 	"github.com/restic/restic/lib/backend/rclone"
@@ -18,7 +19,6 @@ import (
 	"github.com/restic/restic/lib/backend/swift"
 	"github.com/restic/restic/lib/debug"
 	"github.com/restic/restic/lib/errors"
-	"github.com/restic/restic/lib/limiter"
 	"github.com/restic/restic/lib/options"
 	"github.com/restic/restic/lib/restic"
 )
@@ -52,8 +52,14 @@ func parseConfig(loc location.Location, opts options.Options) (interface{}, erro
 			cfg.KeyID = os.Getenv("AWS_ACCESS_KEY_ID")
 		}
 
-		if cfg.Secret == "" {
-			cfg.Secret = os.Getenv("AWS_SECRET_ACCESS_KEY")
+		if cfg.Secret.String() == "" {
+			cfg.Secret = options.NewSecretString(os.Getenv("AWS_SECRET_ACCESS_KEY"))
+		}
+
+		if cfg.KeyID == "" && cfg.Secret.String() != "" {
+			return nil, errors.Fatalf("unable to open S3 backend: Key ID ($AWS_ACCESS_KEY_ID) is empty")
+		} else if cfg.KeyID != "" && cfg.Secret.String() == "" {
+			return nil, errors.Fatalf("unable to open S3 backend: Secret ($AWS_SECRET_ACCESS_KEY) is empty")
 		}
 
 		if cfg.Region == "" {
@@ -86,8 +92,12 @@ func parseConfig(loc location.Location, opts options.Options) (interface{}, erro
 			cfg.AccountName = os.Getenv("AZURE_ACCOUNT_NAME")
 		}
 
-		if cfg.AccountKey == "" {
-			cfg.AccountKey = os.Getenv("AZURE_ACCOUNT_KEY")
+		if cfg.AccountKey.String() == "" {
+			cfg.AccountKey = options.NewSecretString(os.Getenv("AZURE_ACCOUNT_KEY"))
+		}
+
+		if cfg.AccountSAS.String() == "" {
+			cfg.AccountSAS = options.NewSecretString(os.Getenv("AZURE_ACCOUNT_SAS"))
 		}
 
 		if err := opts.Apply(loc.Scheme, &cfg); err != nil {
@@ -122,11 +132,11 @@ func parseConfig(loc location.Location, opts options.Options) (interface{}, erro
 			return nil, errors.Fatalf("unable to open B2 backend: Account ID ($B2_ACCOUNT_ID) is empty")
 		}
 
-		if cfg.Key == "" {
-			cfg.Key = os.Getenv("B2_ACCOUNT_KEY")
+		if cfg.Key.String() == "" {
+			cfg.Key = options.NewSecretString(os.Getenv("B2_ACCOUNT_KEY"))
 		}
 
-		if cfg.Key == "" {
+		if cfg.Key.String() == "" {
 			return nil, errors.Fatalf("unable to open B2 backend: Key ($B2_ACCOUNT_KEY) is empty")
 		}
 
@@ -179,18 +189,14 @@ func openResticBackend(ctx context.Context, s string, opts options.Options) (res
 	}
 
 	// wrap the transport so that the throughput via HTTP is limited
-	lim := limiter.NewStaticLimiter(0, 0)
+	lim := limiter.NewStaticLimiter(limiter.Limits{0, 0})
 	rt = lim.Transport(rt)
 
 	switch loc.Scheme {
 	case "local":
 		be, err = local.Open(ctx, cfg.(local.Config))
-		// wrap the backend in a LimitBackend so that the throughput is limited
-		be = limiter.LimitBackend(be, lim)
 	case "sftp":
 		be, err = sftp.Open(ctx, cfg.(sftp.Config))
-		// wrap the backend in a LimitBackend so that the throughput is limited
-		be = limiter.LimitBackend(be, lim)
 	case "s3":
 		be, err = s3.Open(ctx, cfg.(s3.Config), rt)
 	case "gs":
@@ -198,7 +204,7 @@ func openResticBackend(ctx context.Context, s string, opts options.Options) (res
 	case "azure":
 		be, err = azure.Open(cfg.(azure.Config), rt)
 	case "swift":
-		be, err = swift.Open(cfg.(swift.Config), rt)
+		be, err = swift.Open(ctx, cfg.(swift.Config), rt)
 	case "b2":
 		be, err = b2.Open(ctx, cfg.(b2.Config), rt)
 	case "rest":

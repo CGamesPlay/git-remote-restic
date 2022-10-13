@@ -239,7 +239,10 @@ func Main() (err error) {
 		return err
 	}
 
-	sharedRepo, err = NewRepository(context.Background(), url, password)
+	sharedRepo, err = NewRepository(context.Background(), url, password, repository.Options{
+		Compression: repository.CompressionOff,
+		PackSize:    0,
+	})
 	if err != nil {
 		if err == repository.ErrNoKeyFound {
 			confirmGitCredential(url, false)
