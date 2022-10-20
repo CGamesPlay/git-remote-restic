@@ -1,8 +1,8 @@
 PKG=github.com/CGamesPlay/git-remote-restic
-SOURCES = $(shell find . -name '*.go') go.mod go.sum
 RESTIC_VERSION = $(shell cat restic/VERSION)
 GOFLAGS_debug = -ldflags '-X "main.Version=$(shell git rev-parse --short HEAD; [ -z "$$(git status --porcelain --untracked-files=no)" ] || echo 'with uncommitted changes')" -X "main.ResticVersion=$(RESTIC_VERSION)"'
 GOFLAGS_release = -ldflags '-s -w -extldflags "-static" -X "main.Version=$(shell cat VERSION)" -X "main.ResticVersion=$(RESTIC_VERSION)"'
+OSARCHS = darwin/amd64 darwin/arm64 linux/amd64 linux/arm64
 
 .PHONY: install
 install:
@@ -13,18 +13,19 @@ test: install
 	go test $(PKG)/...
 	./fixtures/test.sh
 
+.PHONY: bins
+bins:
+	go install github.com/mitchellh/gox@latest
+	gox -osarch "$(OSARCHS)" -output "bin/{{.OS}}_{{.Arch}}/git-remote-restic" $(GOFLAGS_release) $(PKG)/cmd/git-remote-restic
+
 .PHONY: release
-release: bin/darwin_amd64.tar.gz bin/linux_amd64.tar.gz
+release: $(patsubst %,bin/%.tar.gz,$(subst /,_,$(OSARCHS)))
 
-.PHONY: bin/darwin_amd64/git-remote-restic
-bin/darwin_amd64/git-remote-restic:
-	mkdir -p $(dir $@)
-	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o $@ $(GOFLAGS_release) $(PKG)/cmd/git-remote-restic
+define ruletemp
+$(patsubst %,bin/%.tar.gz,$(subst /,_,$(1))): $(patsubst %,bin/%/git-remote-restic,$(subst /,_,$(1)))
+	tar -czf $$@ -C $$(dir $$^) $$(notdir $$^)
+$(patsubst %,bin/%/git-remote-restic,$(subst /,_,$(1))): bins
 
-.PHONY: bin/linux_amd64/git-remote-restic
-bin/linux_amd64/git-remote-restic:
-	mkdir -p $(dir $@)
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $@ $(GOFLAGS_release) $(PKG)/cmd/git-remote-restic
+endef
 
-bin/%.tar.gz: bin/%/git-remote-restic
-	tar -czf $@ -C $(dir $^) $(notdir $^)
+$(foreach osarch,$(OSARCHS),$(eval $(call ruletemp, $(osarch))))
