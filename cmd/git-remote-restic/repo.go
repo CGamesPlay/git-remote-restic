@@ -65,12 +65,12 @@ func (r *Repository) Git(allowInit bool) (*git.Repository, error) {
 	var err error
 	if r.fs == nil {
 		var parentSnapshot *restic.ID
-		id, err := restic.FindLatestSnapshot(context.Background(), r.restic.Backend(), r.restic, []string{}, []restic.TagList{}, []string{}, nil)
+		sn, err := restic.FindFilteredSnapshot(context.Background(), r.restic.Backend(), r.restic, nil, nil, nil, nil, "latest")
 		if err != nil && err != restic.ErrNoSnapshotFound {
 			return nil, err
 		}
 		if err == nil {
-			parentSnapshot = &id
+			parentSnapshot = sn.ID()
 		}
 		r.fs, err = resticfs.New(context.Background(), r.restic, parentSnapshot)
 		if err != nil {

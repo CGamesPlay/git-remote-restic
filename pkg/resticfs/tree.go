@@ -11,7 +11,6 @@ import (
 
 	"github.com/go-git/go-billy/v5"
 	"github.com/restic/chunker"
-	resticerrors "github.com/restic/restic/lib/errors"
 	"github.com/restic/restic/lib/restic"
 )
 
@@ -370,7 +369,7 @@ func (n *resticNode) Commit() (err error) {
 		blobs := restic.IDs{}
 		for {
 			chunk, err := n.fs.chunker.Next(n.fs.buf)
-			if resticerrors.Cause(err) == io.EOF {
+			if err == io.EOF {
 				break
 			} else if err != nil {
 				return err

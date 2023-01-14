@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"os"
-	"time"
 
 	"github.com/restic/restic/lib/backend"
 	"github.com/restic/restic/lib/backend/azure"
@@ -182,14 +181,13 @@ func openResticBackend(ctx context.Context, s string, opts options.Options) (res
 		return nil, err
 	}
 
-	tropts := backend.TransportOptions{}
-	rt, err := backend.Transport(tropts)
+	rt, err := backend.Transport(backend.TransportOptions{})
 	if err != nil {
 		return nil, err
 	}
 
 	// wrap the transport so that the throughput via HTTP is limited
-	lim := limiter.NewStaticLimiter(limiter.Limits{0, 0})
+	lim := limiter.NewStaticLimiter(limiter.Limits{UploadKb: 0, DownloadKb: 0})
 	rt = lim.Transport(rt)
 
 	switch loc.Scheme {
@@ -202,7 +200,7 @@ func openResticBackend(ctx context.Context, s string, opts options.Options) (res
 	case "gs":
 		be, err = gs.Open(cfg.(gs.Config), rt)
 	case "azure":
-		be, err = azure.Open(cfg.(azure.Config), rt)
+		be, err = azure.Open(ctx, cfg.(azure.Config), rt)
 	case "swift":
 		be, err = swift.Open(ctx, cfg.(swift.Config), rt)
 	case "b2":
@@ -217,7 +215,12 @@ func openResticBackend(ctx context.Context, s string, opts options.Options) (res
 	}
 
 	if err != nil {
-		return nil, errors.Fatalf("unable to open repo at %v: %v", location.StripPassword(s), err)
+		return nil, errors.Fatalf("unable to open repository at %v: %v", location.StripPassword(s), err)
+	}
+
+	if loc.Scheme == "local" || loc.Scheme == "sftp" {
+		// wrap the backend in a LimitBackend so that the throughput is limited
+		be = limiter.LimitBackend(be, lim)
 	}
 
 	// check if config is there
@@ -229,10 +232,6 @@ func openResticBackend(ctx context.Context, s string, opts options.Options) (res
 	if fi.Size == 0 {
 		return nil, errors.New("config file has zero size, invalid repository?")
 	}
-
-	be = backend.NewRetryBackend(be, 10, func(msg string, err error, d time.Duration) {
-		Warnf("%v returned error, retrying after %v: %v\n", msg, d, err)
-	})
 
 	return be, nil
 }

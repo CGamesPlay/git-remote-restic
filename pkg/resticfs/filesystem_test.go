@@ -25,14 +25,14 @@ const (
 
 // openTestRepo creates a test repository in memory and returns a Filesystem
 // pointing to it.
-func openTestRepo(t *testing.T) (*Filesystem, func()) {
-	repo, cleanup := repository.TestRepository(t)
+func openTestRepo(t *testing.T) *Filesystem {
+	repo := repository.TestRepository(t)
 
 	fs, err := New(testCtx, repo, nil)
 	if err != nil {
 		panic(err)
 	}
-	return fs, cleanup
+	return fs
 }
 
 // openBasicRepo loads the basic restic repo and returns it and the latest
@@ -62,12 +62,12 @@ func openBasicRepo() *Filesystem {
 		panic(err)
 	}
 
-	id, err := restic.FindLatestSnapshot(testCtx, repo.Backend(), repo, nil, nil, nil, nil)
+	sn, err := restic.FindFilteredSnapshot(testCtx, repo.Backend(), repo, nil, nil, nil, nil, "latest")
 	if err != nil {
 		panic(err)
 	}
 
-	fs, err := New(testCtx, repo, &id)
+	fs, err := New(testCtx, repo, sn.ID())
 	if err != nil {
 		panic(err)
 	}
@@ -135,8 +135,7 @@ func TestReadFile(t *testing.T) {
 }
 
 func TestWriteFile(t *testing.T) {
-	fs, cleanup := openTestRepo(t)
-	defer cleanup()
+	fs := openTestRepo(t)
 	fs.StartNewSnapshot()
 
 	file, err := fs.Create("file-1")
@@ -152,8 +151,7 @@ func TestWriteFile(t *testing.T) {
 }
 
 func TestMkdirAll(t *testing.T) {
-	fs, cleanup := openTestRepo(t)
-	defer cleanup()
+	fs := openTestRepo(t)
 	fs.StartNewSnapshot()
 
 	err := fs.MkdirAll("foo/bar", 0777)
