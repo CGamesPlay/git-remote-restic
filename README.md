@@ -67,7 +67,7 @@ Users may be interested in [this guide from GitHub](https://docs.github.com/en/g
 To verify that a restic repository has a complete and consistent copy of the git repository, you can restore the snapshot and verify it using git.
 
 ```bash
-$ restic restic latest --target repo.git
+$ restic restore latest --target repo.git
 $ cd repo.git
 $ git fsck --strict
 ```
