@@ -9,6 +9,7 @@
    - If the patch fails, use `diff -u restic/cmd/restic/global.go cmd/git-remote-restic/restic.go > scripts/update-cmd.patch` to update it.
 5. Use `make test` to verify everything still works.
    - Use `git log -pG <pattern>` to identify commits that changed APIs that are now broken.
-6. Make a commit.
-7. Use `make release` to compile a new release.
-8. Push everything to Github, and make a new release there.
+6. Update `VERSION` to the correct version.
+7. Make a commit.
+8. Use `make release` to compile a new release.
+9. Push everything to Github, and make a new release there.

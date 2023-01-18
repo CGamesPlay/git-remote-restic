@@ -18,6 +18,7 @@ export GIT_AUTHOR_DATE=2006-01-02T15:04:05-0700
 export GIT_COMMITTER_NAME=git-restic-remote
 export GIT_COMMITTER_EMAIL=nobody@example.com
 export GIT_COMMITTER_DATE=2006-01-02T15:04:05-0700
+rm -rf restic workdir
 mkdir restic
 tar xzf restic.tar.gz
 git init workdir

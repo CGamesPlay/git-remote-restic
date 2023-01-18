@@ -19,7 +19,7 @@ bins:
 	gox -osarch "$(OSARCHS)" -output "bin/{{.OS}}_{{.Arch}}/git-remote-restic" $(GOFLAGS_release) $(PKG)/cmd/git-remote-restic
 
 .PHONY: release
-release: $(patsubst %,bin/%.tar.gz,$(subst /,_,$(OSARCHS)))
+release: test $(patsubst %,bin/%.tar.gz,$(subst /,_,$(OSARCHS)))
 
 define ruletemp
 $(patsubst %,bin/%.tar.gz,$(subst /,_,$(1))): $(patsubst %,bin/%/git-remote-restic,$(subst /,_,$(1)))
