@@ -2,7 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"os"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/restic/restic/lib/backend"
 	"github.com/restic/restic/lib/backend/azure"
@@ -11,165 +16,172 @@ import (
 	"github.com/restic/restic/lib/backend/limiter"
 	"github.com/restic/restic/lib/backend/local"
 	"github.com/restic/restic/lib/backend/location"
+	"github.com/restic/restic/lib/backend/logger"
 	"github.com/restic/restic/lib/backend/rclone"
 	"github.com/restic/restic/lib/backend/rest"
 	"github.com/restic/restic/lib/backend/s3"
+	"github.com/restic/restic/lib/backend/sema"
 	"github.com/restic/restic/lib/backend/sftp"
 	"github.com/restic/restic/lib/backend/swift"
 	"github.com/restic/restic/lib/debug"
-	"github.com/restic/restic/lib/errors"
 	"github.com/restic/restic/lib/options"
+	"github.com/restic/restic/lib/repository"
 	"github.com/restic/restic/lib/restic"
+
+	"github.com/restic/restic/lib/errors"
 )
 
+// TimeFormat is the format used for all timestamps printed by restic.
+const TimeFormat = "2006-01-02 15:04:05"
+
+type backendWrapper func(r restic.Backend) (restic.Backend, error)
+
+// GlobalOptions hold all global options for restic.
+type GlobalOptions struct {
+	Repo            string
+	RepositoryFile  string
+	PasswordFile    string
+	PasswordCommand string
+	KeyHint         string
+	Quiet           bool
+	Verbose         int
+	NoLock          bool
+	RetryLock       time.Duration
+	JSON            bool
+	CacheDir        string
+	NoCache         bool
+	CleanupCache    bool
+	Compression     repository.CompressionMode
+	PackSize        uint
+	NoExtraVerify   bool
+
+	backend.TransportOptions
+	limiter.Limits
+
+	stdout io.Writer
+	stderr io.Writer
+
+	backends             *location.Registry
+	backendInnerTestHook backendWrapper
+
+	// verbosity is set as follows:
+	//  0 means: don't print any messages except errors, this is used when --quiet is specified
+	//  1 is the default: print essential messages
+	//  2 means: print more messages, report minor things, this is used when --verbose is specified
+	//  3 means: print very detailed debug messages, this is used when --verbose=2 is specified
+	verbosity uint
+
+	Options []string
+}
+
+var globalOptions = GlobalOptions{
+	stdout: os.Stdout,
+	stderr: os.Stderr,
+	Limits: limiter.Limits{UploadKb: 0, DownloadKb: 0},
+}
+
+var isReadingPassword bool
+
+func init() {
+	backends := location.NewRegistry()
+	backends.Register(azure.NewFactory())
+	backends.Register(b2.NewFactory())
+	backends.Register(gs.NewFactory())
+	backends.Register(local.NewFactory())
+	backends.Register(rclone.NewFactory())
+	backends.Register(rest.NewFactory())
+	backends.Register(s3.NewFactory())
+	backends.Register(sftp.NewFactory())
+	backends.Register(swift.NewFactory())
+	globalOptions.backends = backends
+
+	globalOptions.Repo = os.Getenv("RESTIC_REPOSITORY")
+	globalOptions.RepositoryFile = os.Getenv("RESTIC_REPOSITORY_FILE")
+	globalOptions.PasswordFile = os.Getenv("RESTIC_PASSWORD_FILE")
+	globalOptions.KeyHint = os.Getenv("RESTIC_KEY_HINT")
+	globalOptions.PasswordCommand = os.Getenv("RESTIC_PASSWORD_COMMAND")
+	if os.Getenv("RESTIC_CACERT") != "" {
+		globalOptions.RootCertFilenames = strings.Split(os.Getenv("RESTIC_CACERT"), ",")
+	}
+	globalOptions.TLSClientCertKeyFilename = os.Getenv("RESTIC_TLS_CLIENT_CERT")
+	comp := os.Getenv("RESTIC_COMPRESSION")
+	if comp != "" {
+		// ignore error as there's no good way to handle it
+		_ = globalOptions.Compression.Set(comp)
+	}
+	// parse target pack size from env, on error the default value will be used
+	targetPackSize, _ := strconv.ParseUint(os.Getenv("RESTIC_PACK_SIZE"), 10, 32)
+	globalOptions.PackSize = uint(targetPackSize)
+}
+
+// Printf writes the message to the configured stdout stream.
+func Printf(format string, args ...interface{}) {
+	_, err := fmt.Fprintf(globalOptions.stdout, format, args...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "unable to write to stdout: %v\n", err)
+	}
+}
+
+// Print writes the message to the configured stdout stream.
+func Print(args ...interface{}) {
+	_, err := fmt.Fprint(globalOptions.stdout, args...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "unable to write to stdout: %v\n", err)
+	}
+}
+
+// Println writes the message to the configured stdout stream.
+func Println(args ...interface{}) {
+	_, err := fmt.Fprintln(globalOptions.stdout, args...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "unable to write to stdout: %v\n", err)
+	}
+}
+
+// Verbosef calls Printf to write the message when the verbose flag is set.
+func Verbosef(format string, args ...interface{}) {
+	if globalOptions.verbosity >= 1 {
+		Printf(format, args...)
+	}
+}
+
+// Verboseff calls Printf to write the message when the verbosity is >= 2
+func Verboseff(format string, args ...interface{}) {
+	if globalOptions.verbosity >= 2 {
+		Printf(format, args...)
+	}
+}
+
+// Warnf writes the message to the configured stderr stream.
+func Warnf(format string, args ...interface{}) {
+	_, err := fmt.Fprintf(globalOptions.stderr, format, args...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "unable to write to stderr: %v\n", err)
+	}
+	debug.Log(format, args...)
+}
+
 func parseConfig(loc location.Location, opts options.Options) (interface{}, error) {
-	// only apply options for a particular backend here
-	opts = opts.Extract(loc.Scheme)
-
-	switch loc.Scheme {
-	case "local":
-		cfg := loc.Config.(local.Config)
-		if err := opts.Apply(loc.Scheme, &cfg); err != nil {
-			return nil, err
-		}
-
-		debug.Log("opening local repository at %#v", cfg)
-		return cfg, nil
-
-	case "sftp":
-		cfg := loc.Config.(sftp.Config)
-		if err := opts.Apply(loc.Scheme, &cfg); err != nil {
-			return nil, err
-		}
-
-		debug.Log("opening sftp repository at %#v", cfg)
-		return cfg, nil
-
-	case "s3":
-		cfg := loc.Config.(s3.Config)
-		if cfg.KeyID == "" {
-			cfg.KeyID = os.Getenv("AWS_ACCESS_KEY_ID")
-		}
-
-		if cfg.Secret.String() == "" {
-			cfg.Secret = options.NewSecretString(os.Getenv("AWS_SECRET_ACCESS_KEY"))
-		}
-
-		if cfg.KeyID == "" && cfg.Secret.String() != "" {
-			return nil, errors.Fatalf("unable to open S3 backend: Key ID ($AWS_ACCESS_KEY_ID) is empty")
-		} else if cfg.KeyID != "" && cfg.Secret.String() == "" {
-			return nil, errors.Fatalf("unable to open S3 backend: Secret ($AWS_SECRET_ACCESS_KEY) is empty")
-		}
-
-		if cfg.Region == "" {
-			cfg.Region = os.Getenv("AWS_DEFAULT_REGION")
-		}
-
-		if err := opts.Apply(loc.Scheme, &cfg); err != nil {
-			return nil, err
-		}
-
-		debug.Log("opening s3 repository at %#v", cfg)
-		return cfg, nil
-
-	case "gs":
-		cfg := loc.Config.(gs.Config)
-		if cfg.ProjectID == "" {
-			cfg.ProjectID = os.Getenv("GOOGLE_PROJECT_ID")
-		}
-
-		if err := opts.Apply(loc.Scheme, &cfg); err != nil {
-			return nil, err
-		}
-
-		debug.Log("opening gs repository at %#v", cfg)
-		return cfg, nil
-
-	case "azure":
-		cfg := loc.Config.(azure.Config)
-		if cfg.AccountName == "" {
-			cfg.AccountName = os.Getenv("AZURE_ACCOUNT_NAME")
-		}
-
-		if cfg.AccountKey.String() == "" {
-			cfg.AccountKey = options.NewSecretString(os.Getenv("AZURE_ACCOUNT_KEY"))
-		}
-
-		if cfg.AccountSAS.String() == "" {
-			cfg.AccountSAS = options.NewSecretString(os.Getenv("AZURE_ACCOUNT_SAS"))
-		}
-
-		if err := opts.Apply(loc.Scheme, &cfg); err != nil {
-			return nil, err
-		}
-
-		debug.Log("opening gs repository at %#v", cfg)
-		return cfg, nil
-
-	case "swift":
-		cfg := loc.Config.(swift.Config)
-
-		if err := swift.ApplyEnvironment("", &cfg); err != nil {
-			return nil, err
-		}
-
-		if err := opts.Apply(loc.Scheme, &cfg); err != nil {
-			return nil, err
-		}
-
-		debug.Log("opening swift repository at %#v", cfg)
-		return cfg, nil
-
-	case "b2":
-		cfg := loc.Config.(b2.Config)
-
-		if cfg.AccountID == "" {
-			cfg.AccountID = os.Getenv("B2_ACCOUNT_ID")
-		}
-
-		if cfg.AccountID == "" {
-			return nil, errors.Fatalf("unable to open B2 backend: Account ID ($B2_ACCOUNT_ID) is empty")
-		}
-
-		if cfg.Key.String() == "" {
-			cfg.Key = options.NewSecretString(os.Getenv("B2_ACCOUNT_KEY"))
-		}
-
-		if cfg.Key.String() == "" {
-			return nil, errors.Fatalf("unable to open B2 backend: Key ($B2_ACCOUNT_KEY) is empty")
-		}
-
-		if err := opts.Apply(loc.Scheme, &cfg); err != nil {
-			return nil, err
-		}
-
-		debug.Log("opening b2 repository at %#v", cfg)
-		return cfg, nil
-	case "rest":
-		cfg := loc.Config.(rest.Config)
-		if err := opts.Apply(loc.Scheme, &cfg); err != nil {
-			return nil, err
-		}
-
-		debug.Log("opening rest repository at %#v", cfg)
-		return cfg, nil
-	case "rclone":
-		cfg := loc.Config.(rclone.Config)
-		if err := opts.Apply(loc.Scheme, &cfg); err != nil {
-			return nil, err
-		}
-
-		debug.Log("opening rest repository at %#v", cfg)
-		return cfg, nil
+	cfg := loc.Config
+	if cfg, ok := cfg.(restic.ApplyEnvironmenter); ok {
+		cfg.ApplyEnvironment("")
 	}
 
-	return nil, errors.Fatalf("invalid backend: %q", loc.Scheme)
+	// only apply options for a particular backend here
+	opts = opts.Extract(loc.Scheme)
+	if err := opts.Apply(loc.Scheme, cfg); err != nil {
+		return nil, err
+	}
+
+	debug.Log("opening %v repository at %#v", loc.Scheme, cfg)
+	return cfg, nil
 }
 
 // Open the backend specified by a location config.
-func openResticBackend(ctx context.Context, s string, opts options.Options) (restic.Backend, error) {
-	debug.Log("parsing location %v", location.StripPassword(s))
-	loc, err := location.Parse(s)
+func open(ctx context.Context, s string, opts options.Options) (restic.Backend, error) {
+	gopts := globalOptions
+	debug.Log("parsing location %v", location.StripPassword(gopts.backends, s))
+	loc, err := location.Parse(gopts.backends, s)
 	if err != nil {
 		return nil, errors.Fatalf("parsing repository location failed: %v", err)
 	}
@@ -181,52 +193,40 @@ func openResticBackend(ctx context.Context, s string, opts options.Options) (res
 		return nil, err
 	}
 
-	rt, err := backend.Transport(backend.TransportOptions{})
+	rt, err := backend.Transport(gopts.TransportOptions)
 	if err != nil {
-		return nil, err
+		return nil, errors.Fatal(err.Error())
 	}
 
 	// wrap the transport so that the throughput via HTTP is limited
-	lim := limiter.NewStaticLimiter(limiter.Limits{UploadKb: 0, DownloadKb: 0})
+	lim := limiter.NewStaticLimiter(gopts.Limits)
 	rt = lim.Transport(rt)
 
-	switch loc.Scheme {
-	case "local":
-		be, err = local.Open(ctx, cfg.(local.Config))
-	case "sftp":
-		be, err = sftp.Open(ctx, cfg.(sftp.Config))
-	case "s3":
-		be, err = s3.Open(ctx, cfg.(s3.Config), rt)
-	case "gs":
-		be, err = gs.Open(cfg.(gs.Config), rt)
-	case "azure":
-		be, err = azure.Open(ctx, cfg.(azure.Config), rt)
-	case "swift":
-		be, err = swift.Open(ctx, cfg.(swift.Config), rt)
-	case "b2":
-		be, err = b2.Open(ctx, cfg.(b2.Config), rt)
-	case "rest":
-		be, err = rest.Open(cfg.(rest.Config), rt)
-	case "rclone":
-		be, err = rclone.Open(cfg.(rclone.Config), lim)
-
-	default:
+	factory := gopts.backends.Lookup(loc.Scheme)
+	if factory == nil {
 		return nil, errors.Fatalf("invalid backend: %q", loc.Scheme)
 	}
 
+	be, err = factory.Open(ctx, cfg, rt, lim)
 	if err != nil {
-		return nil, errors.Fatalf("unable to open repository at %v: %v", location.StripPassword(s), err)
+		return nil, errors.Fatalf("unable to open repository at %v: %v", location.StripPassword(gopts.backends, s), err)
 	}
 
-	if loc.Scheme == "local" || loc.Scheme == "sftp" {
-		// wrap the backend in a LimitBackend so that the throughput is limited
-		be = limiter.LimitBackend(be, lim)
+	// wrap with debug logging and connection limiting
+	be = logger.New(sema.NewBackend(be))
+
+	// wrap backend if a test specified an inner hook
+	if gopts.backendInnerTestHook != nil {
+		be, err = gopts.backendInnerTestHook(be)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// check if config is there
 	fi, err := be.Stat(ctx, restic.Handle{Type: restic.ConfigFile})
 	if err != nil {
-		return nil, errors.Fatalf("unable to open config file: %v\nIs there a repository at the following location?\n%v", err, location.StripPassword(s))
+		return nil, errors.Fatalf("unable to open config file: %v\nIs there a repository at the following location?\n%v", err, location.StripPassword(gopts.backends, s))
 	}
 
 	if fi.Size == 0 {

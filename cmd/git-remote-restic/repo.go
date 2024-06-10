@@ -33,7 +33,7 @@ type Repository struct {
 
 // NewRepository creates a new Repository.
 func NewRepository(ctx context.Context, path string, password string, opts repository.Options) (*Repository, error) {
-	be, err := openResticBackend(ctx, path, nil)
+	be, err := open(ctx, path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +45,7 @@ func NewRepository(ctx context.Context, path string, password string, opts repos
 		return nil, err
 	}
 
-	if err = resticRepo.LoadIndex(ctx); err != nil {
+	if err = resticRepo.LoadIndex(ctx, nil); err != nil {
 		return nil, err
 	}
 
@@ -65,7 +65,8 @@ func (r *Repository) Git(allowInit bool) (*git.Repository, error) {
 	var err error
 	if r.fs == nil {
 		var parentSnapshot *restic.ID
-		sn, err := restic.FindFilteredSnapshot(context.Background(), r.restic.Backend(), r.restic, nil, nil, nil, nil, "latest")
+		f := restic.SnapshotFilter{}
+		sn, _, err := f.FindLatest(context.Background(), r.restic.Backend(), r.restic, "latest")
 		if err != nil && !errors.Is(err, restic.ErrNoSnapshotFound) {
 			return nil, err
 		}

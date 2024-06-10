@@ -44,7 +44,7 @@ func openBasicRepo() *Filesystem {
 		panic(err)
 	}
 	var be restic.Backend
-	if be, err = local.Open(testCtx, config.(local.Config)); err != nil {
+	if be, err = local.Open(testCtx, *config); err != nil {
 		panic(err)
 	}
 	repo, err := repository.New(be, repository.Options{
@@ -58,11 +58,12 @@ func openBasicRepo() *Filesystem {
 		panic(err)
 	}
 
-	if err = repo.LoadIndex(testCtx); err != nil {
+	if err = repo.LoadIndex(testCtx, nil); err != nil {
 		panic(err)
 	}
 
-	sn, err := restic.FindFilteredSnapshot(testCtx, repo.Backend(), repo, nil, nil, nil, nil, "latest")
+	f := restic.SnapshotFilter{}
+	sn, _, err := f.FindLatest(testCtx, repo.Backend(), repo, "latest")
 	if err != nil {
 		panic(err)
 	}
