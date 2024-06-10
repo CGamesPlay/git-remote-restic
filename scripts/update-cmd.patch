@@ -1,102 +1,89 @@
---- restic/cmd/restic/global.go	2023-01-14 10:13:49.000000000 +0400
-+++ cmd/git-remote-restic/restic.go	2023-01-14 10:50:55.000000000 +0400
-@@ -1,17 +1,8 @@
+--- restic/cmd/restic/global.go	2024-06-10 07:50:58.000000000 +0600
++++ cmd/git-remote-restic/restic.go	2024-06-10 08:35:16.000000000 +0600
+@@ -1,13 +1,10 @@
  package main
  
  import (
 -	"bufio"
  	"context"
--	"fmt"
--	"io"
+ 	"fmt"
+ 	"io"
  	"os"
 -	"path/filepath"
 -	"runtime"
--	"strconv"
--	"strings"
--	"syscall"
--	"time"
- 
- 	"github.com/restic/restic/lib/backend"
- 	"github.com/restic/restic/lib/backend/azure"
-@@ -22,528 +13,15 @@
- 	"github.com/restic/restic/lib/backend/location"
+ 	"strconv"
+ 	"strings"
+ 	"time"
+@@ -22,29 +19,18 @@
+ 	"github.com/restic/restic/lib/backend/logger"
  	"github.com/restic/restic/lib/backend/rclone"
  	"github.com/restic/restic/lib/backend/rest"
 -	"github.com/restic/restic/lib/backend/retry"
  	"github.com/restic/restic/lib/backend/s3"
+ 	"github.com/restic/restic/lib/backend/sema"
  	"github.com/restic/restic/lib/backend/sftp"
  	"github.com/restic/restic/lib/backend/swift"
 -	"github.com/restic/restic/lib/cache"
  	"github.com/restic/restic/lib/debug"
 -	"github.com/restic/restic/lib/fs"
-+	"github.com/restic/restic/lib/errors"
  	"github.com/restic/restic/lib/options"
--	"github.com/restic/restic/lib/repository"
+ 	"github.com/restic/restic/lib/repository"
  	"github.com/restic/restic/lib/restic"
 -	"github.com/restic/restic/lib/textfile"
 -	"github.com/restic/restic/lib/ui/termstatus"
--
--	"github.com/restic/restic/lib/errors"
+ 
+ 	"github.com/restic/restic/lib/errors"
 -
 -	"os/exec"
 -
 -	"golang.org/x/term"
  )
  
--var version = "0.15.0"
+-var version = "0.16.4"
 -
--// TimeFormat is the format used for all timestamps printed by restic.
--const TimeFormat = "2006-01-02 15:04:05"
--
--type backendWrapper func(r restic.Backend) (restic.Backend, error)
--
--// GlobalOptions hold all global options for restic.
--type GlobalOptions struct {
--	Repo            string
--	RepositoryFile  string
--	PasswordFile    string
--	PasswordCommand string
--	KeyHint         string
--	Quiet           bool
--	Verbose         int
--	NoLock          bool
--	JSON            bool
--	CacheDir        string
--	NoCache         bool
--	CleanupCache    bool
--	Compression     repository.CompressionMode
--	PackSize        uint
--
--	backend.TransportOptions
--	limiter.Limits
--
+ // TimeFormat is the format used for all timestamps printed by restic.
+ const TimeFormat = "2006-01-02 15:04:05"
+ 
+@@ -72,12 +58,11 @@
+ 	backend.TransportOptions
+ 	limiter.Limits
+ 
 -	password string
 -	stdout   io.Writer
 -	stderr   io.Writer
--
++	stdout io.Writer
++	stderr io.Writer
+ 
+-	backends                              *location.Registry
 -	backendTestHook, backendInnerTestHook backendWrapper
--
--	// verbosity is set as follows:
--	//  0 means: don't print any messages except errors, this is used when --quiet is specified
--	//  1 is the default: print essential messages
--	//  2 means: print more messages, report minor things, this is used when --verbose is specified
--	//  3 means: print very detailed debug messages, this is used when --verbose=2 is specified
--	verbosity uint
--
--	Options []string
++	backends             *location.Registry
++	backendInnerTestHook backendWrapper
+ 
+ 	// verbosity is set as follows:
+ 	//  0 means: don't print any messages except errors, this is used when --quiet is specified
+@@ -87,17 +72,15 @@
+ 	verbosity uint
+ 
+ 	Options []string
 -
 -	extended options.Options
--}
--
--var globalOptions = GlobalOptions{
--	stdout: os.Stdout,
--	stderr: os.Stderr,
--}
--
--var isReadingPassword bool
+ }
+ 
+ var globalOptions = GlobalOptions{
+ 	stdout: os.Stdout,
+ 	stderr: os.Stderr,
++	Limits: limiter.Limits{UploadKb: 0, DownloadKb: 0},
+ }
+ 
+ var isReadingPassword bool
 -var internalGlobalCtx context.Context
--
--func init() {
+ 
+ func init() {
+ 	backends := location.NewRegistry()
+@@ -112,42 +95,6 @@
+ 	backends.Register(swift.NewFactory())
+ 	globalOptions.backends = backends
+ 
 -	var cancel context.CancelFunc
 -	internalGlobalCtx, cancel = context.WithCancel(context.Background())
 -	AddCleanupHandler(func(code int) (int, error) {
@@ -113,16 +100,19 @@
 -	f.StringVarP(&globalOptions.KeyHint, "key-hint", "", "", "`key` ID of key to try decrypting first (default: $RESTIC_KEY_HINT)")
 -	f.StringVarP(&globalOptions.PasswordCommand, "password-command", "", "", "shell `command` to obtain the repository password from (default: $RESTIC_PASSWORD_COMMAND)")
 -	f.BoolVarP(&globalOptions.Quiet, "quiet", "q", false, "do not output comprehensive progress report")
--	f.CountVarP(&globalOptions.Verbose, "verbose", "v", "be verbose (specify multiple times or a level using --verbose=`n`, max level/times is 2)")
+-	// use empty paremeter name as `-v, --verbose n` instead of the correct `--verbose=n` is confusing
+-	f.CountVarP(&globalOptions.Verbose, "verbose", "v", "be verbose (specify multiple times or a level using --verbose=n``, max level/times is 2)")
 -	f.BoolVar(&globalOptions.NoLock, "no-lock", false, "do not lock the repository, this allows some operations on read-only repositories")
+-	f.DurationVar(&globalOptions.RetryLock, "retry-lock", 0, "retry to lock the repository if it is already locked, takes a value like 5m or 2h (default: no retries)")
 -	f.BoolVarP(&globalOptions.JSON, "json", "", false, "set output mode to JSON for commands that support it")
 -	f.StringVar(&globalOptions.CacheDir, "cache-dir", "", "set the cache `directory`. (default: use system default cache directory)")
 -	f.BoolVar(&globalOptions.NoCache, "no-cache", false, "do not use a local cache")
--	f.StringSliceVar(&globalOptions.RootCertFilenames, "cacert", nil, "`file` to load root certificates from (default: use system certificates)")
--	f.StringVar(&globalOptions.TLSClientCertKeyFilename, "tls-client-cert", "", "path to a `file` containing PEM encoded TLS client certificate and private key")
+-	f.StringSliceVar(&globalOptions.RootCertFilenames, "cacert", nil, "`file` to load root certificates from (default: use system certificates or $RESTIC_CACERT)")
+-	f.StringVar(&globalOptions.TLSClientCertKeyFilename, "tls-client-cert", "", "path to a `file` containing PEM encoded TLS client certificate and private key (default: $RESTIC_TLS_CLIENT_CERT)")
 -	f.BoolVar(&globalOptions.InsecureTLS, "insecure-tls", false, "skip TLS certificate verification when connecting to the repository (insecure)")
 -	f.BoolVar(&globalOptions.CleanupCache, "cleanup-cache", false, "auto remove old cache directories")
--	f.Var(&globalOptions.Compression, "compression", "compression mode (only available for repository format version 2), one of (auto|off|max)")
+-	f.Var(&globalOptions.Compression, "compression", "compression mode (only available for repository format version 2), one of (auto|off|max) (default: $RESTIC_COMPRESSION)")
+-	f.BoolVar(&globalOptions.NoExtraVerify, "no-extra-verify", false, "skip additional verification of data before upload (see documentation)")
 -	f.IntVar(&globalOptions.Limits.UploadKb, "limit-upload", 0, "limits uploads to a maximum `rate` in KiB/s. (default: unlimited)")
 -	f.IntVar(&globalOptions.Limits.DownloadKb, "limit-download", 0, "limits downloads to a maximum `rate` in KiB/s. (default: unlimited)")
 -	f.UintVar(&globalOptions.PackSize, "pack-size", 0, "set target pack `size` in MiB, created pack files may be larger (default: $RESTIC_PACK_SIZE)")
@@ -130,36 +120,15 @@
 -	// Use our "generate" command instead of the cobra provided "completion" command
 -	cmdRoot.CompletionOptions.DisableDefaultCmd = true
 -
--	globalOptions.Repo = os.Getenv("RESTIC_REPOSITORY")
--	globalOptions.RepositoryFile = os.Getenv("RESTIC_REPOSITORY_FILE")
--	globalOptions.PasswordFile = os.Getenv("RESTIC_PASSWORD_FILE")
--	globalOptions.KeyHint = os.Getenv("RESTIC_KEY_HINT")
--	globalOptions.PasswordCommand = os.Getenv("RESTIC_PASSWORD_COMMAND")
--	comp := os.Getenv("RESTIC_COMPRESSION")
--	if comp != "" {
--		// ignore error as there's no good way to handle it
--		_ = globalOptions.Compression.Set(comp)
--	}
--	// parse target pack size from env, on error the default value will be used
--	targetPackSize, _ := strconv.ParseUint(os.Getenv("RESTIC_PACK_SIZE"), 10, 32)
--	globalOptions.PackSize = uint(targetPackSize)
+ 	globalOptions.Repo = os.Getenv("RESTIC_REPOSITORY")
+ 	globalOptions.RepositoryFile = os.Getenv("RESTIC_REPOSITORY_FILE")
+ 	globalOptions.PasswordFile = os.Getenv("RESTIC_PASSWORD_FILE")
+@@ -165,82 +112,6 @@
+ 	// parse target pack size from env, on error the default value will be used
+ 	targetPackSize, _ := strconv.ParseUint(os.Getenv("RESTIC_PACK_SIZE"), 10, 32)
+ 	globalOptions.PackSize = uint(targetPackSize)
 -
 -	restoreTerminal()
--}
--
--// checkErrno returns nil when err is set to syscall.Errno(0), since this is no
--// error condition.
--func checkErrno(err error) error {
--	e, ok := err.(syscall.Errno)
--	if !ok {
--		return err
--	}
--
--	if e == 0 {
--		return nil
--	}
--
--	return err
 -}
 -
 -func stdinIsTerminal() bool {
@@ -210,7 +179,7 @@
 -		if !isReadingPassword {
 -			return code, nil
 -		}
--		err := checkErrno(term.Restore(fd, state))
+-		err := term.Restore(fd, state)
 -		if err != nil {
 -			fmt.Fprintf(os.Stderr, "unable to restore terminal state: %v\n", err)
 -		}
@@ -234,54 +203,13 @@
 -		}
 -	}
 -	return strings.Repeat(" ", w-1) + "\r"
--}
--
--// Printf writes the message to the configured stdout stream.
--func Printf(format string, args ...interface{}) {
--	_, err := fmt.Fprintf(globalOptions.stdout, format, args...)
--	if err != nil {
--		fmt.Fprintf(os.Stderr, "unable to write to stdout: %v\n", err)
--	}
--}
--
--// Print writes the message to the configured stdout stream.
--func Print(args ...interface{}) {
--	_, err := fmt.Fprint(globalOptions.stdout, args...)
--	if err != nil {
--		fmt.Fprintf(os.Stderr, "unable to write to stdout: %v\n", err)
--	}
--}
--
--// Println writes the message to the configured stdout stream.
--func Println(args ...interface{}) {
--	_, err := fmt.Fprintln(globalOptions.stdout, args...)
--	if err != nil {
--		fmt.Fprintf(os.Stderr, "unable to write to stdout: %v\n", err)
--	}
--}
--
--// Verbosef calls Printf to write the message when the verbose flag is set.
--func Verbosef(format string, args ...interface{}) {
--	if globalOptions.verbosity >= 1 {
--		Printf(format, args...)
--	}
--}
--
--// Verboseff calls Printf to write the message when the verbosity is >= 2
--func Verboseff(format string, args ...interface{}) {
--	if globalOptions.verbosity >= 2 {
--		Printf(format, args...)
--	}
--}
--
--// Warnf writes the message to the configured stderr stream.
--func Warnf(format string, args ...interface{}) {
--	_, err := fmt.Fprintf(globalOptions.stderr, format, args...)
--	if err != nil {
--		fmt.Fprintf(os.Stderr, "unable to write to stderr: %v\n", err)
--	}
--}
--
+ }
+ 
+ // Printf writes the message to the configured stdout stream.
+@@ -290,270 +161,6 @@
+ 	debug.Log(format, args...)
+ }
+ 
 -// resolvePassword determines the password to be used for opening the repository.
 -func resolvePassword(opts GlobalOptions, envStr string) (string, error) {
 -	if opts.PasswordFile != "" && opts.PasswordCommand != "" {
@@ -447,11 +375,12 @@
 -	}
 -
 -	s, err := repository.New(be, repository.Options{
--		Compression: opts.Compression,
--		PackSize:    opts.PackSize * 1024 * 1024,
+-		Compression:   opts.Compression,
+-		PackSize:      opts.PackSize * 1024 * 1024,
+-		NoExtraVerify: opts.NoExtraVerify,
 -	})
 -	if err != nil {
--		return nil, err
+-		return nil, errors.Fatal(err.Error())
 -	}
 -
 -	passwordTriesLeft := 1
@@ -546,57 +475,36 @@
 -}
 -
  func parseConfig(loc location.Location, opts options.Options) (interface{}, error) {
- 	// only apply options for a particular backend here
- 	opts = opts.Extract(loc.Scheme)
-@@ -689,7 +167,7 @@
+ 	cfg := loc.Config
+ 	if cfg, ok := cfg.(restic.ApplyEnvironmenter); ok {
+@@ -571,7 +178,8 @@
  }
  
  // Open the backend specified by a location config.
 -func open(ctx context.Context, s string, gopts GlobalOptions, opts options.Options) (restic.Backend, error) {
-+func openResticBackend(ctx context.Context, s string, opts options.Options) (restic.Backend, error) {
- 	debug.Log("parsing location %v", location.StripPassword(s))
- 	loc, err := location.Parse(s)
++func open(ctx context.Context, s string, opts options.Options) (restic.Backend, error) {
++	gopts := globalOptions
+ 	debug.Log("parsing location %v", location.StripPassword(gopts.backends, s))
+ 	loc, err := location.Parse(gopts.backends, s)
  	if err != nil {
-@@ -703,13 +181,13 @@
+@@ -585,7 +193,7 @@
  		return nil, err
  	}
  
 -	rt, err := backend.Transport(globalOptions.TransportOptions)
-+	rt, err := backend.Transport(backend.TransportOptions{})
++	rt, err := backend.Transport(gopts.TransportOptions)
  	if err != nil {
- 		return nil, err
+ 		return nil, errors.Fatal(err.Error())
  	}
- 
- 	// wrap the transport so that the throughput via HTTP is limited
--	lim := limiter.NewStaticLimiter(gopts.Limits)
-+	lim := limiter.NewStaticLimiter(limiter.Limits{UploadKb: 0, DownloadKb: 0})
- 	rt = lim.Transport(rt)
- 
- 	switch loc.Scheme {
-@@ -740,14 +218,6 @@
- 		return nil, errors.Fatalf("unable to open repository at %v: %v", location.StripPassword(s), err)
- 	}
- 
--	// wrap backend if a test specified an inner hook
--	if gopts.backendInnerTestHook != nil {
--		be, err = gopts.backendInnerTestHook(be)
--		if err != nil {
--			return nil, err
--		}
--	}
--
- 	if loc.Scheme == "local" || loc.Scheme == "sftp" {
- 		// wrap the backend in a LimitBackend so that the throughput is limited
- 		be = limiter.LimitBackend(be, lim)
-@@ -765,46 +235,3 @@
+@@ -627,34 +235,3 @@
  
  	return be, nil
  }
 -
 -// Create the backend specified by URI.
--func create(ctx context.Context, s string, opts options.Options) (restic.Backend, error) {
--	debug.Log("parsing location %v", s)
--	loc, err := location.Parse(s)
+-func create(ctx context.Context, s string, gopts GlobalOptions, opts options.Options) (restic.Backend, error) {
+-	debug.Log("parsing location %v", location.StripPassword(gopts.backends, s))
+-	loc, err := location.Parse(gopts.backends, s)
 -	if err != nil {
 -		return nil, err
 -	}
@@ -608,30 +516,18 @@
 -
 -	rt, err := backend.Transport(globalOptions.TransportOptions)
 -	if err != nil {
+-		return nil, errors.Fatal(err.Error())
+-	}
+-
+-	factory := gopts.backends.Lookup(loc.Scheme)
+-	if factory == nil {
+-		return nil, errors.Fatalf("invalid backend: %q", loc.Scheme)
+-	}
+-
+-	be, err := factory.Create(ctx, cfg, rt, nil)
+-	if err != nil {
 -		return nil, err
 -	}
 -
--	switch loc.Scheme {
--	case "local":
--		return local.Create(ctx, cfg.(local.Config))
--	case "sftp":
--		return sftp.Create(ctx, cfg.(sftp.Config))
--	case "s3":
--		return s3.Create(ctx, cfg.(s3.Config), rt)
--	case "gs":
--		return gs.Create(cfg.(gs.Config), rt)
--	case "azure":
--		return azure.Create(ctx, cfg.(azure.Config), rt)
--	case "swift":
--		return swift.Open(ctx, cfg.(swift.Config), rt)
--	case "b2":
--		return b2.Create(ctx, cfg.(b2.Config), rt)
--	case "rest":
--		return rest.Create(ctx, cfg.(rest.Config), rt)
--	case "rclone":
--		return rclone.Create(ctx, cfg.(rclone.Config))
--	}
--
--	debug.Log("invalid repository scheme: %v", s)
--	return nil, errors.Fatalf("invalid scheme %q", loc.Scheme)
+-	return logger.New(sema.NewBackend(be)), nil
 -}
