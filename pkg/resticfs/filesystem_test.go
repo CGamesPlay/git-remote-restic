@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/restic/restic/lib/backend"
 	"github.com/restic/restic/lib/backend/local"
 	"github.com/restic/restic/lib/repository"
 	"github.com/restic/restic/lib/restic"
@@ -43,7 +44,7 @@ func openBasicRepo() *Filesystem {
 	if err != nil {
 		panic(err)
 	}
-	var be restic.Backend
+	var be backend.Backend
 	if be, err = local.Open(testCtx, *config); err != nil {
 		panic(err)
 	}
@@ -63,7 +64,7 @@ func openBasicRepo() *Filesystem {
 	}
 
 	f := restic.SnapshotFilter{}
-	sn, _, err := f.FindLatest(testCtx, repo.Backend(), repo, "latest")
+	sn, _, err := f.FindLatest(testCtx, repo, repo, "latest")
 	if err != nil {
 		panic(err)
 	}

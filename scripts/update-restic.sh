@@ -10,7 +10,7 @@ pull() {
 	git fetch 'git@github.com:restic/restic.git' "${argc_tag:?}"
 	git checkout FETCH_HEAD
 	mv internal lib
-	find . -name '*.go' -exec sed -i -e 's/"github.com\/restic\/restic\/internal/"github.com\/restic\/restic\/lib/' {} \;
+	find . -name '*.go' -exec gsed -i 's/"github.com\/restic\/restic\/internal/"github.com\/restic\/restic\/lib/' {} \;
 	make # Just a test to ensure that the sed script worked.
 	git add .
 	git commit -m "Rename internal to lib"
@@ -20,8 +20,7 @@ pull() {
 
 # @cmd Pull in the restic CLI configuration
 update-cmd() {
-	cp restic/cmd/restic/global.go cmd/git-remote-restic/restic.go
-	gpatch --merge cmd/git-remote-restic/restic.go scripts/update-cmd.patch
+	cp restic/cmd/restic/global.go cmd/git-remote-restic/
 }
 
 if ! command -v argc >/dev/null; then
