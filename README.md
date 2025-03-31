@@ -18,7 +18,7 @@ This program is based on a fork of restic and may not be up-to-date with the lat
 >
 > During initial development (versions prior to 1.0.0), maintainers and developers will do their utmost to keep backwards compatibility and stability, although there might be breaking changes without increasing the major version.
 
-The latest version of this software is based on restic 0.16.4. The currently installed version can be checked by running `git-remote-restic --version`.
+The latest version of this software is based on restic 0.18.0. The currently installed version can be checked by running `git-remote-restic --version`.
 
 Bug reports are accepted.
 
