@@ -12,6 +12,8 @@ banner() {
 }
 
 export RESTIC_PASSWORD=password
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_SYSTEM=/dev/null
 export GIT_AUTHOR_NAME=git-restic-remote
 export GIT_AUTHOR_EMAIL=nobody@example.com
 export GIT_AUTHOR_DATE=2006-01-02T15:04:05-0700
@@ -21,7 +23,7 @@ export GIT_COMMITTER_DATE=2006-01-02T15:04:05-0700
 rm -rf restic workdir
 mkdir restic
 tar xzf restic.tar.gz
-git init workdir
+git init --initial-branch=master workdir
 cd workdir
 
 echo "Test versions:"
