@@ -12,7 +12,7 @@ Restic is a backup program specifically designed to store files securely in untr
 
 Presently, `git-remote-restic` is functional and used by the author to keep secure backups of personal projects. For detailed information about future plans for the project, see [TODO.md](TODO.md).
 
-This program is based on a fork of restic and may not be up-to-date with the latest restic features, however the restic project is conscientious of backwards compatibility. Here is [the compatibility note from the documentation](https://restic.net/#compatibility).
+This program is built against a pinned version of restic and may not be up-to-date with the latest restic features, however the restic project is conscientious of backwards compatibility. Here is [the compatibility note from the documentation](https://restic.net/#compatibility).
 
 > Once version 1.0.0 is released, we guarantee backward compatibility of all repositories within one major version; as long as we do not increment the major version, data can be read and restored. We strive to be fully backward compatible to all prior versions.
 >
@@ -28,7 +28,7 @@ Bug reports are accepted.
 
 1. [Install restic](https://restic.net/#installation) using the provided instructions.
 2. Download a binary from [the releases page](https://github.com/CGamesPlay/git-remote-restic/releases) and place it in your PATH.
-   Alternatively, use `go get github.com/CGamesPlay/git-remote-restic`
+   Alternatively, clone this repository and run `make install`, which downloads and builds against restic's source code.
 
 ### Getting started
 

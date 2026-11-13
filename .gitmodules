@@ -1,3 +1,0 @@
-[submodule "restic"]
-	path = restic
-	url = git@github.com:CGamesPlay/restic.git
