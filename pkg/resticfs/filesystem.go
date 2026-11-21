@@ -16,8 +16,8 @@ import (
 	"github.com/go-git/go-billy/v5/osfs"
 	billyutil "github.com/go-git/go-billy/v5/util"
 	"github.com/restic/chunker"
+	"github.com/restic/restic/lib/data"
 	"github.com/restic/restic/lib/restic"
-	"golang.org/x/sync/errgroup"
 )
 
 // blobCacheSize specifies the maximum size in bytes of the blob cache.
@@ -85,7 +85,7 @@ func New(ctx context.Context, repo restic.Repository, parentSnapshotID *restic.I
 		Temporary: osfs.New(""),
 	}
 	if parentSnapshotID != nil {
-		snapshot, err := restic.LoadSnapshot(ctx, repo, *parentSnapshotID)
+		snapshot, err := data.LoadSnapshot(ctx, repo, *parentSnapshotID)
 		if err != nil {
 			return nil, err
 		}
@@ -130,31 +130,22 @@ func (fs *Filesystem) CommitSnapshot(path string, tags []string) (id restic.ID, 
 	if !fs.root.IsDirty() {
 		return restic.ID{}, ErrNoChanges
 	}
-	wg, ctx := errgroup.WithContext(fs.ctx)
-	fs.repo.StartPackUploader(ctx, wg)
 	var tree restic.ID
-	var snapshot *restic.Snapshot
-	tree, err = fs.root.Commit()
+	err = fs.repo.WithBlobUploader(fs.ctx, func(ctx context.Context, uploader restic.BlobSaverWithAsync) error {
+		var err error
+		tree, err = fs.root.Commit(ctx, uploader)
+		return err
+	})
 	if err != nil {
 		return restic.ID{}, err
 	}
-	err = fs.repo.Flush(fs.ctx)
-	if err != nil {
-		return restic.ID{}, err
-	}
-	snapshot, err = restic.NewSnapshot([]string{path}, tags, hostname, time.Now())
+
+	snapshot, err := data.NewSnapshot([]string{path}, tags, hostname, time.Now())
 	if err != nil {
 		return restic.ID{}, err
 	}
 	snapshot.Tree = &tree
-	id, err = restic.SaveSnapshot(fs.ctx, fs.repo, snapshot)
-	if err != nil {
-		return restic.ID{}, err
-	}
-	if err := wg.Wait(); err != nil {
-		return restic.ID{}, err
-	}
-	return id, nil
+	return data.SaveSnapshot(fs.ctx, fs.repo, snapshot)
 }
 
 // Create creates the named file with mode 0666 (before umask), truncating

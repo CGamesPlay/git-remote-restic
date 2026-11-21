@@ -2,7 +2,6 @@
 #
 # Populate ./restic using the restic.git version pinned in ./restic.config,
 # then rename internal/ to lib/, since Go otherwise prevents us from importing those packages.
-# Finally, copy restic's CLI setup code into our own `package main`, since Go cannot import restic's `package main`.
 #
 # (Note that go.mod redirects github.com/restic/restic dependencies to ./restic.)
 set -euo pipefail
@@ -45,6 +44,3 @@ find "$staging/restic" -name '*.go.original' -delete
 echo "$commit" >"$staging/$marker"
 rm -rf restic
 mv "$staging/restic" restic
-
-# This should only dirty our git repo if we are in the midst of changing the pinned restic.git version.
-cp restic/cmd/restic/global.go cmd/git-remote-restic/

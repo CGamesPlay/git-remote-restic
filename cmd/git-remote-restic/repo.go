@@ -11,8 +11,13 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/cache"
 	gitfs "github.com/go-git/go-git/v5/storage/filesystem"
 	"github.com/pkg/errors"
+	"github.com/restic/restic/lib/backend/all"
+	"github.com/restic/restic/lib/data"
+	"github.com/restic/restic/lib/global"
 	"github.com/restic/restic/lib/repository"
 	"github.com/restic/restic/lib/restic"
+	"github.com/restic/restic/lib/ui"
+	"github.com/restic/restic/lib/ui/progress"
 )
 
 const lockRefreshInterval = 5 * time.Minute
@@ -26,26 +31,27 @@ var globalLocks struct {
 
 // Repository is a wrapper around a restic-backed git repository.
 type Repository struct {
-	restic *repository.Repository
-	git    *git.Repository
-	fs     *resticfs.Filesystem
+	restic  *repository.Repository
+	printer progress.Printer
+	git     *git.Repository
+	fs      *resticfs.Filesystem
 }
 
-// NewRepository creates a new Repository.
-func NewRepository(ctx context.Context, path string, password string) (*Repository, error) {
-	// This code inspired by restic/cmd/restic/global.go OpenRepository.
-	be, err := open(ctx, path, globalOptions, globalOptions.extended)
-	if err != nil {
-		return nil, err
-	}
-	resticRepo, err := repository.New(be, repository.Options{
+// NewRepository creates a new Repository. The terminal must write only to
+// stderr, since stdout carries the remote-helper protocol.
+func NewRepository(ctx context.Context, path string, password string, term ui.Terminal) (*Repository, error) {
+	globalOptions := global.Options{
+		Repo:        path,
+		NoCache:     true,
 		Compression: repository.CompressionOff,
-		PackSize:    0,
-	})
-	if err != nil {
-		return nil, err
+		Backends:    all.Backends(),
+		Password:    password,
+		Term:        term,
 	}
-	if err = resticRepo.SearchKey(ctx, password, 0, ""); err != nil {
+	printer := ui.NewProgressPrinter(false, 0, term)
+
+	resticRepo, err := global.OpenRepository(ctx, globalOptions, printer)
+	if err != nil {
 		return nil, err
 	}
 
@@ -53,11 +59,7 @@ func NewRepository(ctx context.Context, path string, password string) (*Reposito
 		return nil, err
 	}
 
-	repo := &Repository{
-		restic: resticRepo,
-	}
-
-	return repo, err
+	return &Repository{restic: resticRepo, printer: printer}, nil
 }
 
 // Git returns the *git.Repository stored in the restic.Repository. If no such
@@ -69,9 +71,9 @@ func (r *Repository) Git(allowInit bool) (*git.Repository, error) {
 	var err error
 	if r.fs == nil {
 		var parentSnapshot *restic.ID
-		f := restic.SnapshotFilter{}
+		f := data.SnapshotFilter{}
 		sn, _, err := f.FindLatest(context.Background(), r.restic, r.restic, "latest")
-		if err != nil && !errors.Is(err, restic.ErrNoSnapshotFound) {
+		if err != nil && !errors.Is(err, data.ErrNoSnapshotFound) {
 			return nil, err
 		}
 		if err == nil {
@@ -97,9 +99,9 @@ func (r *Repository) Git(allowInit bool) (*git.Repository, error) {
 func (r *Repository) Lock(exclusive bool) (*repository.Unlocker, error) {
 	ctx := context.Background()
 
-	lock, _, err := repository.Lock(ctx, r.restic, exclusive, globalOptions.RetryLock, func(msg string) {
-		Verbosef("%s", msg)
-	}, Warnf)
+	lock, _, err := repository.Lock(ctx, r.restic, exclusive, 0, func(msg string) {
+		r.printer.P("%s", msg)
+	}, r.printer.E)
 	if err != nil {
 		return nil, errors.WithMessage(err, "unable to create lock in backend")
 	}

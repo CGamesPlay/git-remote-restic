@@ -1,16 +1,19 @@
 package resticfs
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-git/go-billy/v5"
 	"github.com/restic/chunker"
+	"github.com/restic/restic/lib/data"
 	"github.com/restic/restic/lib/restic"
 )
 
@@ -42,18 +45,21 @@ func newTree(fs *Filesystem, parent *resticTree) *resticTree {
 }
 
 func openTree(fs *Filesystem, parent *resticTree, original restic.ID) (*resticTree, error) {
-	tree, err := restic.LoadTree(fs.ctx, fs.repo, original)
+	nodes, err := data.LoadTree(fs.ctx, fs.repo, original)
 	if err != nil {
 		return nil, err
 	}
 	t := &resticTree{
 		fs:     fs,
 		parent: parent,
-		Nodes:  make([]*resticNode, len(tree.Nodes)),
+		Nodes:  make([]*resticNode, 0),
 		ID:     &original,
 	}
-	for i := range tree.Nodes {
-		t.Nodes[i] = newFromNode(t.fs, t, tree.Nodes[i])
+	for item := range nodes {
+		if item.Error != nil {
+			return nil, item.Error
+		}
+		t.Nodes = append(t.Nodes, newFromNode(t.fs, t, item.Node))
 	}
 	return t, nil
 }
@@ -111,30 +117,34 @@ func (t *resticTree) OpenFile(original string, name string, flag int, perm os.Fi
 }
 
 // Commit will persist any modifications to the restic repository.
-func (t *resticTree) Commit() (restic.ID, error) {
+func (t *resticTree) Commit(ctx context.Context, saver restic.BlobSaver) (restic.ID, error) {
 	if t.ID != nil {
 		return *t.ID, nil
 	}
-	tree := restic.Tree{
-		Nodes: make([]*restic.Node, len(t.Nodes)),
-	}
-	for i, n := range t.Nodes {
-		if err := n.Commit(); err != nil {
+
+	// Restic requires a tree's nodes to be sorted by name.
+	slices.SortFunc(t.Nodes, func(a, b *resticNode) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	builder := data.NewTreeJSONBuilder()
+	for _, n := range t.Nodes {
+		if err := n.Commit(ctx, saver); err != nil {
 			return restic.ID{}, err
 		}
-		tree.Nodes[i] = &n.Node
+		if err := builder.AddNode(&n.Node); err != nil {
+			return restic.ID{}, err
+		}
 	}
-	data, err := json.Marshal(tree)
+	treeJSON, err := builder.Finalize()
 	if err != nil {
 		return restic.ID{}, err
 	}
-	data = append(data, '\n')
 
-	id := restic.Hash(data)
+	id := restic.Hash(treeJSON)
 	if _, ok := t.fs.repo.LookupBlobSize(restic.TreeBlob, id); ok {
 		goto success
 	}
-	_, _, _, err = t.fs.repo.SaveBlob(t.fs.ctx, restic.TreeBlob, data, id, false)
+	_, _, _, err = saver.SaveBlob(ctx, restic.TreeBlob, treeJSON, id, false)
 	if err != nil {
 		return restic.ID{}, err
 	}
@@ -186,7 +196,7 @@ func (t *resticTree) markDirty() {
 type resticNode struct {
 	fs     *Filesystem
 	parent *resticTree
-	restic.Node
+	data.Node
 	subtree     *resticTree
 	flock       sync.Mutex
 	backingMu   sync.Mutex
@@ -194,7 +204,7 @@ type resticNode struct {
 	openWriters int
 }
 
-func newFromNode(fs *Filesystem, parent *resticTree, node *restic.Node) *resticNode {
+func newFromNode(fs *Filesystem, parent *resticTree, node *data.Node) *resticNode {
 	n := &resticNode{fs: fs, parent: parent, Node: *node}
 	return n
 }
@@ -203,7 +213,7 @@ func newDirectory(fs *Filesystem, parent *resticTree, name string, perm os.FileM
 	n := &resticNode{
 		fs:     fs,
 		parent: parent,
-		Node: restic.Node{
+		Node: data.Node{
 			Name:       name,
 			Type:       "dir",
 			Mode:       perm & ^uMask,
@@ -225,7 +235,7 @@ func newFile(fs *Filesystem, parent *resticTree, name string, perm os.FileMode) 
 	n := &resticNode{
 		fs:     fs,
 		parent: parent,
-		Node: restic.Node{
+		Node: data.Node{
 			Name:       name,
 			Type:       "file",
 			Mode:       perm & ^uMask,
@@ -337,7 +347,7 @@ func (n *resticNode) SetBacking(val billy.File) {
 }
 
 // Commit will persist any modifications to the restic repository.
-func (n *resticNode) Commit() (err error) {
+func (n *resticNode) Commit(ctx context.Context, saver restic.BlobSaver) (err error) {
 	if n.fs.Logger != nil {
 		defer func() {
 			n.fs.Logger.Printf("(*resticNode)(%p).Commit() => %v\n", n, err)
@@ -378,7 +388,7 @@ func (n *resticNode) Commit() (err error) {
 
 			id := restic.Hash(chunk.Data)
 			if _, ok := n.fs.repo.LookupBlobSize(restic.DataBlob, id); !ok {
-				_, _, _, err := n.fs.repo.SaveBlob(n.fs.ctx, restic.DataBlob, chunk.Data, id, true)
+				_, _, _, err := saver.SaveBlob(ctx, restic.DataBlob, chunk.Data, id, true)
 				if err != nil {
 					return err
 				}
@@ -403,7 +413,7 @@ func (n *resticNode) Commit() (err error) {
 			}
 			return nil
 		}
-		id, err := n.subtree.Commit()
+		id, err := n.subtree.Commit(ctx, saver)
 		if err == nil {
 			n.Node.Subtree = &id
 		}
