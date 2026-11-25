@@ -20,6 +20,19 @@ export GIT_AUTHOR_DATE=2006-01-02T15:04:05-0700
 export GIT_COMMITTER_NAME=git-restic-remote
 export GIT_COMMITTER_EMAIL=nobody@example.com
 export GIT_COMMITTER_DATE=2006-01-02T15:04:05-0700
+
+if [ -z "${GIT_REMOTE_RESTIC_UNDER_TEST:-}" ]; then
+    echo "\$GIT_REMOTE_RESTIC_UNDER_TEST not set; must identify a specific \`git-remote-restic\` binary by absolute path" >&2
+    exit 1
+fi
+# Confirm that `git-remote-restic` resolves to the binary that was just built at the outset of `make test`.
+# (`git-remote-restic` must actually be on the $PATH, and not just callable via $GIT_REMOTE_RESTIC_UNDER_TEST,
+# since the $PATH is how git finds our remote helper for the `restic::` transport.)
+if [ "$(command -v git-remote-restic)" != "$GIT_REMOTE_RESTIC_UNDER_TEST" ]; then
+    echo "\$PATH resolves git-remote-restic to $(command -v git-remote-restic), not $GIT_REMOTE_RESTIC_UNDER_TEST" >&2
+    exit 1
+fi
+
 rm -rf restic workdir
 mkdir restic
 tar xzf restic.tar.gz
