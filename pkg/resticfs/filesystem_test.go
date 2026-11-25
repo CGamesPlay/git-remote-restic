@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"path"
 	"strings"
 	"testing"
 
@@ -145,6 +146,34 @@ func requireTreeNodeNames(t *testing.T, fs *Filesystem, treeID restic.ID, expect
 	require.Equal(t, expectedNodeNames, actualNodeNames)
 }
 
+// loadDirectoryNodeNames maps
+// the relative path of each (sub)directory within rootTreeID (including "" for the root directory itself)
+// to that (sub)tree's node names ordered exactly as they are stored.
+func loadDirectoryNodeNames(t *testing.T, fs *Filesystem, rootTreeID restic.ID) map[string][]string {
+	t.Helper()
+
+	directoryNodeNames := map[string][]string{}
+
+	var loadDirectory func(directoryPath string, treeID restic.ID)
+	loadDirectory = func(directoryPath string, treeID restic.ID) {
+		nodes, err := data.LoadTree(testCtx, fs.repo, treeID)
+		require.NoError(t, err, directoryPath)
+
+		nodeNames := []string{}
+		for item := range nodes {
+			require.NoError(t, item.Error, directoryPath)
+			nodeNames = append(nodeNames, item.Node.Name)
+			if item.Node.Type == "dir" {
+				loadDirectory(path.Join(directoryPath, item.Node.Name), *item.Node.Subtree)
+			}
+		}
+		directoryNodeNames[directoryPath] = nodeNames
+	}
+
+	loadDirectory("", rootTreeID)
+	return directoryNodeNames
+}
+
 func TestReadDir(t *testing.T) {
 	fs := openBasicRepo(t)
 
@@ -267,22 +296,39 @@ func TestOpen_LegacyUnsortedTrees(t *testing.T) {
 	}
 }
 
-// Modifying a legacy snapshot sorts the nodes in
-// each of the rewritten trees (each modified directory and its ancestors)
-// and in no others (descendants, siblings, etc.).
-func TestCommitSnapshot_SortsRewrittenLegacyTrees(t *testing.T) {
+// Modifying a legacy snapshot sorts the nodes in every tree,
+// not just those in modified trees.
+func TestCommitSnapshot_SortsAllLegacyTrees(t *testing.T) {
 	fs := openLegacyUnsortedRepo(t)
-	fs.StartNewSnapshot()
 
+	const firstPack = "pack-167bd03ac705c335a04c566c698dbe7ce407b631"
+	const secondPack = "pack-4088f24ace9fd5e8816a32c8be76dc46364ad2e5"
+	require.Equal(t, map[string][]string{
+		"":             {"objects", "refs", "HEAD", "config"},
+		"objects":      {"info", "pack"},
+		"objects/info": {},
+		"objects/pack": {firstPack + ".pack", firstPack + ".idx", secondPack + ".pack", secondPack + ".idx"},
+		"refs":         {"heads", "tags"},
+		"refs/heads":   {"master", "develop"},
+		"refs/tags":    {},
+	}, loadDirectoryNodeNames(t, fs, *fs.root.ID))
+
+	// Modify only refs/heads.
+	fs.StartNewSnapshot()
 	writeTestFile(t, fs, "refs/heads/feature")
 
+	// Require _all_ directories' nodes to be sorted.
 	snapshotID, err := fs.CommitSnapshot("/tmp", []string{})
 	require.NoError(t, err)
 	snapshot, err := data.LoadSnapshot(testCtx, fs.repo, snapshotID)
 	require.NoError(t, err)
-	requireTreeNodeNames(t, fs, *snapshot.Tree, []string{"HEAD", "config", "objects", "refs"})
-
-	refsHeadsID, err := data.FindTreeDirectory(testCtx, fs.repo, snapshot.Tree, "refs/heads")
-	require.NoError(t, err)
-	requireTreeNodeNames(t, fs, *refsHeadsID, []string{"develop", "feature", "master"})
+	require.Equal(t, map[string][]string{
+		"":             {"HEAD", "config", "objects", "refs"}, // ancestor of the modified directory, and now sorted
+		"objects":      {"info", "pack"},
+		"objects/info": {},
+		"objects/pack": {firstPack + ".idx", firstPack + ".pack", secondPack + ".idx", secondPack + ".pack"}, // not modified, but sorted anyway
+		"refs":         {"heads", "tags"},
+		"refs/heads":   {"develop", "feature", "master"}, // directly modified, and now sorted
+		"refs/tags":    {},
+	}, loadDirectoryNodeNames(t, fs, *snapshot.Tree))
 }

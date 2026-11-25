@@ -122,10 +122,7 @@ func (t *resticTree) Commit(ctx context.Context, saver restic.BlobSaver) (restic
 		return *t.ID, nil
 	}
 
-	// Restic requires a tree's nodes to be sorted by name.
-	slices.SortFunc(t.Nodes, func(a, b *resticNode) int {
-		return strings.Compare(a.Name, b.Name)
-	})
+	slices.SortFunc(t.Nodes, compareNodeNames)
 	builder := data.NewTreeJSONBuilder()
 	for _, n := range t.Nodes {
 		if err := n.Commit(ctx, saver); err != nil {
@@ -189,6 +186,33 @@ func (t *resticTree) markDirty() {
 		t.ID = nil
 		t = t.parent
 	}
+}
+
+// MarkMisorderedTreesAsDirty marks as dirty every (sub)tree whose nodes are misordered,
+// and also marks each such tree's _ancestors_ to force `<root>.Commit()` to walk down to the relevant tree.
+func (t *resticTree) MarkMisorderedTreesAsDirty() error {
+	if !slices.IsSortedFunc(t.Nodes, compareNodeNames) {
+		t.markDirty()
+	}
+	for _, n := range t.Nodes {
+		if n.Type != "dir" {
+			continue
+		}
+
+		subtree, err := n.OpenSubtree()
+		if err != nil {
+			return err
+		}
+		if err := subtree.MarkMisorderedTreesAsDirty(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// compareNodeNames helps sort a tree's nodes by name, as required by restic.
+func compareNodeNames(a, b *resticNode) int {
+	return strings.Compare(a.Name, b.Name)
 }
 
 // resticNode stores information about a single file or directory. The only

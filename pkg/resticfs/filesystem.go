@@ -127,9 +127,19 @@ func (fs *Filesystem) CommitSnapshot(path string, tags []string) (id restic.ID, 
 			fs.Logger.Printf("CommitSnapshot() => %v\n", val)
 		}()
 	}
+
+	// Try to repair _every_ tree or subtree with misordered nodes, as may be found in legacy snapshots,
+	// so that operations like single-file `restic dump` can begin to work.
+	//
+	// Unfortunately, this migration only occurs during a _nontrivial_ `git push`;
+	// as of git 2.56.0, `git push` doesn't tell its remote helper to push refs that haven't changed ("Everything up-to-date").
+	if err = fs.root.MarkMisorderedTreesAsDirty(); err != nil {
+		return restic.ID{}, err
+	}
 	if !fs.root.IsDirty() {
 		return restic.ID{}, ErrNoChanges
 	}
+
 	var tree restic.ID
 	err = fs.repo.WithBlobUploader(fs.ctx, func(ctx context.Context, uploader restic.BlobSaverWithAsync) error {
 		var err error
