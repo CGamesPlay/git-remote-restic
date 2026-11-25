@@ -138,7 +138,7 @@ func (t *resticTree) Commit(ctx context.Context, saver restic.BlobSaver) (restic
 	}
 
 	id := restic.Hash(treeJSON)
-	if _, ok := t.fs.repo.LookupBlobSize(restic.TreeBlob, id); ok {
+	if _, ok := t.fs.repo.LookupBlobSize(restic.BlobHandle{ID: id, Type: restic.TreeBlob}); ok {
 		goto success
 	}
 	_, _, _, err = saver.SaveBlob(ctx, restic.TreeBlob, treeJSON, id, false)
@@ -411,7 +411,7 @@ func (n *resticNode) Commit(ctx context.Context, saver restic.BlobSaver) (err er
 			n.Node.Size += uint64(chunk.Length)
 
 			id := restic.Hash(chunk.Data)
-			if _, ok := n.fs.repo.LookupBlobSize(restic.DataBlob, id); !ok {
+			if _, ok := n.fs.repo.LookupBlobSize(restic.BlobHandle{ID: id, Type: restic.DataBlob}); !ok {
 				_, _, _, err := saver.SaveBlob(ctx, restic.DataBlob, chunk.Data, id, true)
 				if err != nil {
 					return err

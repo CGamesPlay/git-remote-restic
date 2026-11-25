@@ -369,7 +369,7 @@ func (fs *Filesystem) getBlob(id restic.ID) ([]byte, error) {
 	if ok {
 		return blob, nil
 	}
-	blob, err := fs.repo.LoadBlob(fs.ctx, restic.DataBlob, id, nil)
+	blob, err := fs.repo.LoadBlob(fs.ctx, restic.BlobHandle{ID: id, Type: restic.DataBlob}, nil)
 	if err != nil {
 		return nil, err
 	}

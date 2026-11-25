@@ -29,7 +29,7 @@ func newResticFile(fs *Filesystem, node *resticNode) (*resticFile, error) {
 	}
 	acc := uint64(0)
 	for i, id := range node.Content {
-		size, found := fs.repo.LookupBlobSize(restic.DataBlob, id)
+		size, found := fs.repo.LookupBlobSize(restic.BlobHandle{ID: id, Type: restic.DataBlob})
 		if !found {
 			return nil, fmt.Errorf("id %v not found in repository", id)
 		}

@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"sync"
-	"time"
 
 	"github.com/CGamesPlay/git-remote-restic/pkg/resticfs"
 	"github.com/go-git/go-billy/v5/helper/polyfill"
@@ -20,19 +18,10 @@ import (
 	"github.com/restic/restic/lib/ui/progress"
 )
 
-const lockRefreshInterval = 5 * time.Minute
-
-var globalLocks struct {
-	locks         []*repository.Unlocker
-	cancelRefresh chan struct{}
-	refreshWG     sync.WaitGroup
-	sync.Mutex
-}
-
 // Repository is a wrapper around a restic-backed git repository.
 type Repository struct {
 	restic  *repository.Repository
-	printer progress.Printer
+	printer restic.Printer
 	git     *git.Repository
 	fs      *resticfs.Filesystem
 }
@@ -48,14 +37,14 @@ func NewRepository(ctx context.Context, path string, password string, term ui.Te
 		Password:    password,
 		Term:        term,
 	}
-	printer := ui.NewProgressPrinter(false, 0, term)
+	printer := progress.NewTerminalPrinter(false, 0, term)
 
 	resticRepo, err := global.OpenRepository(ctx, globalOptions, printer)
 	if err != nil {
 		return nil, err
 	}
 
-	if err = resticRepo.LoadIndex(ctx, nil); err != nil {
+	if err = resticRepo.LoadIndex(ctx, printer); err != nil {
 		return nil, err
 	}
 
@@ -94,25 +83,17 @@ func (r *Repository) Git(allowInit bool) (*git.Repository, error) {
 	return r.git, err
 }
 
-// Lock creates the listed type of lock on the repository, and uses a goroutine
-// to ensure that the lock doesn't expire.
-func (r *Repository) Lock(exclusive bool) (*repository.Unlocker, error) {
+// Lock creates the listed type of lock on the repository,
+// which restic continually refreshes in the background until the returned (`unlock`) function is invoked.
+func (r *Repository) Lock(exclusive bool) (unlock func(), err error) {
 	ctx := context.Background()
 
-	lock, _, err := repository.Lock(ctx, r.restic, exclusive, 0, func(msg string) {
+	unlock, _, err = repository.LockRepo(ctx, r.restic, exclusive, 0, func(msg string) {
 		r.printer.P("%s", msg)
 	}, r.printer.E)
 	if err != nil {
 		return nil, errors.WithMessage(err, "unable to create lock in backend")
 	}
 
-	return lock, err
-}
-
-// Unlock unlocks the provided lock.
-func (r *Repository) Unlock(lock *repository.Unlocker) {
-	if lock == nil {
-		return
-	}
-	lock.Unlock()
+	return unlock, nil
 }

@@ -33,13 +33,11 @@ func init() {
 // them locally; implemented by "pushing" the refs from the restic repo into
 // the local repo.
 func FetchBatch(fetchSpecs [][]string) error {
-	lock, err := sharedRepo.Lock(false)
+	unlock, err := sharedRepo.Lock(false)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		sharedRepo.Unlock(lock)
-	}()
+	defer unlock()
 	repo, err := sharedRepo.Git(false)
 	if err != nil {
 		return err
@@ -96,13 +94,11 @@ func FetchBatch(fetchSpecs [][]string) error {
 // implemented by "pulling" the refs from the local repository into the restic
 // repo.
 func PushBatch(refspecs []config.RefSpec) (map[string]error, error) {
-	lock, err := sharedRepo.Lock(true)
+	unlock, err := sharedRepo.Lock(true)
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		sharedRepo.Unlock(lock)
-	}()
+	defer unlock()
 	sharedRepo.fs.StartNewSnapshot()
 
 	repo, err := sharedRepo.Git(true)

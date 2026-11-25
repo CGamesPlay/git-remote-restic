@@ -84,7 +84,7 @@ func openFixtureRepo(t *testing.T, repoURL string) *Filesystem {
 		panic(err)
 	}
 
-	if err = repo.LoadIndex(testCtx, nil); err != nil {
+	if err = repo.LoadIndex(testCtx, restic.NewNoopPrinter()); err != nil {
 		panic(err)
 	}
 
