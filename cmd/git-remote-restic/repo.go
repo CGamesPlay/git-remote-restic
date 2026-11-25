@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"sync"
-	"time"
 
 	"github.com/CGamesPlay/git-remote-restic/pkg/resticfs"
 	"github.com/go-git/go-billy/v5/helper/polyfill"
@@ -11,53 +9,46 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/cache"
 	gitfs "github.com/go-git/go-git/v5/storage/filesystem"
 	"github.com/pkg/errors"
+	"github.com/restic/restic/lib/backend/all"
+	"github.com/restic/restic/lib/data"
+	"github.com/restic/restic/lib/global"
 	"github.com/restic/restic/lib/repository"
 	"github.com/restic/restic/lib/restic"
+	"github.com/restic/restic/lib/ui"
+	"github.com/restic/restic/lib/ui/progress"
 )
-
-const lockRefreshInterval = 5 * time.Minute
-
-var globalLocks struct {
-	locks         []*repository.Unlocker
-	cancelRefresh chan struct{}
-	refreshWG     sync.WaitGroup
-	sync.Mutex
-}
 
 // Repository is a wrapper around a restic-backed git repository.
 type Repository struct {
-	restic *repository.Repository
-	git    *git.Repository
-	fs     *resticfs.Filesystem
+	restic  *repository.Repository
+	printer restic.Printer
+	git     *git.Repository
+	fs      *resticfs.Filesystem
 }
 
-// NewRepository creates a new Repository.
-func NewRepository(ctx context.Context, path string, password string) (*Repository, error) {
-	// This code inspired by restic/cmd/restic/global.go OpenRepository.
-	be, err := open(ctx, path, globalOptions, globalOptions.extended)
-	if err != nil {
-		return nil, err
-	}
-	resticRepo, err := repository.New(be, repository.Options{
+// NewRepository creates a new Repository. The terminal must write only to
+// stderr, since stdout carries the remote-helper protocol.
+func NewRepository(ctx context.Context, path string, password string, term ui.Terminal) (*Repository, error) {
+	globalOptions := global.Options{
+		Repo:        path,
+		NoCache:     true,
 		Compression: repository.CompressionOff,
-		PackSize:    0,
-	})
+		Backends:    all.Backends(),
+		Password:    password,
+		Term:        term,
+	}
+	printer := progress.NewTerminalPrinter(false, 0, term)
+
+	resticRepo, err := global.OpenRepository(ctx, globalOptions, printer)
 	if err != nil {
 		return nil, err
 	}
-	if err = resticRepo.SearchKey(ctx, password, 0, ""); err != nil {
+
+	if err = resticRepo.LoadIndex(ctx, printer); err != nil {
 		return nil, err
 	}
 
-	if err = resticRepo.LoadIndex(ctx, nil); err != nil {
-		return nil, err
-	}
-
-	repo := &Repository{
-		restic: resticRepo,
-	}
-
-	return repo, err
+	return &Repository{restic: resticRepo, printer: printer}, nil
 }
 
 // Git returns the *git.Repository stored in the restic.Repository. If no such
@@ -69,9 +60,9 @@ func (r *Repository) Git(allowInit bool) (*git.Repository, error) {
 	var err error
 	if r.fs == nil {
 		var parentSnapshot *restic.ID
-		f := restic.SnapshotFilter{}
+		f := data.SnapshotFilter{}
 		sn, _, err := f.FindLatest(context.Background(), r.restic, r.restic, "latest")
-		if err != nil && !errors.Is(err, restic.ErrNoSnapshotFound) {
+		if err != nil && !errors.Is(err, data.ErrNoSnapshotFound) {
 			return nil, err
 		}
 		if err == nil {
@@ -92,25 +83,17 @@ func (r *Repository) Git(allowInit bool) (*git.Repository, error) {
 	return r.git, err
 }
 
-// Lock creates the listed type of lock on the repository, and uses a goroutine
-// to ensure that the lock doesn't expire.
-func (r *Repository) Lock(exclusive bool) (*repository.Unlocker, error) {
+// Lock creates the listed type of lock on the repository,
+// which restic continually refreshes in the background until the returned (`unlock`) function is invoked.
+func (r *Repository) Lock(exclusive bool) (unlock func(), err error) {
 	ctx := context.Background()
 
-	lock, _, err := repository.Lock(ctx, r.restic, exclusive, globalOptions.RetryLock, func(msg string) {
-		Verbosef("%s", msg)
-	}, Warnf)
+	unlock, _, err = repository.LockRepo(ctx, r.restic, exclusive, 0, func(msg string) {
+		r.printer.P("%s", msg)
+	}, r.printer.E)
 	if err != nil {
 		return nil, errors.WithMessage(err, "unable to create lock in backend")
 	}
 
-	return lock, err
-}
-
-// Unlock unlocks the provided lock.
-func (r *Repository) Unlock(lock *repository.Unlocker) {
-	if lock == nil {
-		return
-	}
-	lock.Unlock()
+	return unlock, nil
 }

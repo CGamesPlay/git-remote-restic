@@ -8,7 +8,7 @@ import (
 )
 
 func TestCopyOnWrite(t *testing.T) {
-	fs := openBasicRepo()
+	fs := openBasicRepo(t)
 	fs.StartNewSnapshot()
 
 	h1, err := fs.Open("README.md")

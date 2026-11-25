@@ -15,6 +15,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/pkg/errors"
 	"github.com/restic/restic/lib/repository"
+	"github.com/restic/restic/lib/ui/termstatus"
 )
 
 var sharedRepo *Repository
@@ -239,7 +240,16 @@ func Main() (err error) {
 		return err
 	}
 
-	sharedRepo, err = NewRepository(context.Background(), url, password)
+	// Don't read stdin or pollute stdout, since those are used by the git remote-helper protocol.
+	term, stopTerm := termstatus.Setup(
+		io.NopCloser(strings.NewReader("")), // in
+		os.Stderr,                           // out
+		os.Stderr,                           // err
+		true,                                // quiet
+	)
+	defer stopTerm()
+
+	sharedRepo, err = NewRepository(context.Background(), url, password, term)
 	if err != nil {
 		if err == repository.ErrNoKeyFound {
 			confirmGitCredential(url, false)
